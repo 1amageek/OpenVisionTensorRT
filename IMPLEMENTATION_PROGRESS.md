@@ -72,7 +72,7 @@ be mistaken for successful production execution.
 | RG10 end-to-end preprocessing | p50 0.663581 ms; p95 0.706149 ms; one H2D, one kernel, zero explicit post-prepare frame-sized device allocations |
 | Public Swift Jetson path | `VisionImageInput` borrow, CUDA tensor lease, nonzero device address, input release, tensor release, and shutdown passed |
 | Retryable cleanup | Injected stream-synchronization failure retained a non-null owner; second destruction succeeded |
-| Semantic model | RTMDet-nano plus DWPose-m manifest fixes exact preprocessing, tensor shapes, 61 body/hand mappings, source revisions, and SHA-256 digests |
+| Semantic model | RTMDet-nano plus DWPose-m manifest fixes exact preprocessing, bounded runtime-variable detector output shapes, `int64` labels, 61 body/hand mappings, source revisions, and SHA-256 digests |
 | Model inference | Not implemented; no TensorRT engine is accepted yet |
 
 ## Release gates beyond implementation

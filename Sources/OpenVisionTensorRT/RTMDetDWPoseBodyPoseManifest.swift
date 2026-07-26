@@ -27,7 +27,7 @@ public enum RTMDetDWPoseBodyPoseManifest {
         let pose = try poseStage()
         return try VisionModelManifest(
             id: "openmmlab.rtmdet-nano-dwpose-m.wholebody",
-            revision: "05d8511e+c8b76419",
+            revision: "05d8511e+c8b76419+mmdeploy-3f8604b",
             request: .detectHumanBodyPoseRequest(.revision2),
             stages: [detector, pose],
             output: try VisionModelOutputDescriptor(
@@ -78,17 +78,17 @@ public enum RTMDetDWPoseBodyPoseManifest {
                     elementType: .float32,
                     shape: [
                         .batch(maximum: 1),
-                        .fixed(100),
+                        .variable(maximum: 100),
                         .fixed(5)
                     ],
                     meaning: .personDetections(maximumCount: 100)
                 ),
                 try VisionModelTensorDescriptor(
                     id: classesTensor,
-                    elementType: .int32,
+                    elementType: .int64,
                     shape: [
                         .batch(maximum: 1),
-                        .fixed(100)
+                        .variable(maximum: 100)
                     ],
                     meaning: .classIndices(maximumCount: 100)
                 )

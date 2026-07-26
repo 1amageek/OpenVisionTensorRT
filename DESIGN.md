@@ -68,7 +68,8 @@ The bring-up manifest fixes two independently verifiable semantic stages:
 ```text
 RTMDet-nano
   320x320 / BGR / NCHW / ImageNet channel normalization
-    -> at most four person regions above 0.3 confidence
+    -> dets[1,N,5] + labels[1,N] int64, bounded to N <= 100
+      -> at most four person regions above 0.3 confidence
       -> 1.25x region-affine crop
         -> DWPose-m
           256x192 / RGB / NCHW / 133 COCO-WholeBody joints

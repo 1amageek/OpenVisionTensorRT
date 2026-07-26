@@ -51,6 +51,11 @@ The checkpoint files are evidence inputs and are not stored in this repository.
 Model caches must remain in the configured Hugging Face cache when a
 Hugging Face distribution is used.
 
+The pinned MMDeploy export produces `dets[1,N,5]` as `float32` and
+`labels[1,N]` as `int64`, with `N` bounded to 100 by post-processing. The
+semantic manifest preserves this runtime-variable dimension and element type;
+it does not reinterpret the label tensor as a fixed-width `int32` array.
+
 ## Performance and memory implications
 
 The detector runs once per frame. Pose cost scales with the bounded person

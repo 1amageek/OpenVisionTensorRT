@@ -113,7 +113,33 @@ struct RTMDetDWPoseBodyPoseManifestTests {
                     RTMDetDWPoseBodyPoseManifest.simCCYTensor
             )
         )
+        let detections = try #require(
+            detector.output(
+                identifiedBy:
+                    RTMDetDWPoseBodyPoseManifest.detectionsTensor
+            )
+        )
+        let labels = try #require(
+            detector.output(
+                identifiedBy:
+                    RTMDetDWPoseBodyPoseManifest.classesTensor
+            )
+        )
 
+        #expect(
+            detections.shape == [
+                .batch(maximum: 1),
+                .variable(maximum: 100),
+                .fixed(5)
+            ]
+        )
+        #expect(
+            labels.shape == [
+                .batch(maximum: 1),
+                .variable(maximum: 100)
+            ]
+        )
+        #expect(labels.elementType == .int64)
         #expect(
             xTensor.shape == [
                 .batch(maximum: 4),
