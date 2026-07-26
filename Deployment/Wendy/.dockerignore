@@ -1,6 +1,8 @@
 *
 !.build-context/
+!.build-context/**
 !.build-context/CTensorRTShim.cpp
+!.build-context/CRG10Preprocessor.cpp
 !.build-context/CTensorRTShim.h
 !Dockerfile
 !Probe.cpp

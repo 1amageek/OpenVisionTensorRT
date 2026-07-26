@@ -18,17 +18,30 @@
 - [x] Test-only D2H byte verification outside the measured H2D path
 - [x] Typed primary and cleanup transfer failure stages
 - [x] Jetson p50/p95 transfer latency and throughput measurement
+- [x] Reusable RG10 input, tensor output, and configuration device buffers
+- [x] One NVRTC compilation and PTX module load per prepared preprocessor
+- [x] Fused SRGGB10 linearization, bilinear demosaic, orientation, and resize
+- [x] Letterbox/crop, color matrix, sRGB, normalization, layout, and channel order
+- [x] One H2D copy and one kernel launch per frame
+- [x] Scoped OpenVision borrow with synchronous H2D source-read fence
+- [x] Output-ready CUDA event and explicit device-tensor lease
+- [x] Public Swift API probe on the real Jetson GPU
+- [x] Retryable dependency-ordered CUDA cleanup without premature owner release
+- [x] Jetson fault injection proving failed cleanup retains the retry owner
+- [x] Differential GPU/CPU fixtures for all orientations and resize policies
+- [x] Independent RGGB golden fixture
+- [x] Jetson preprocessing p50/p95 and end-to-end frame-path measurements
 
 ## Incomplete production work
 
 - [ ] Select the semantic body/hand pose model and joint schema.
 - [ ] Deserialize and validate a matching TensorRT engine.
-- [ ] Implement reusable CUDA buffers and execution contexts.
-- [ ] Implement RG10 GPU preprocessing.
+- [ ] Implement reusable TensorRT execution contexts and inference workspace.
 - [ ] Implement request execution and observation decoding.
-- [ ] Connect input-consumed CUDA synchronization to a camera frame lease.
 - [ ] Conform the production provider to `VisionProvider`.
-- [ ] Measure 1920x1080 RG10 at 30 FPS on Jetson.
+- [ ] Run the public provider with a real camera frame lease.
+- [ ] Measure sustained 1920x1080 RG10 at 30 FPS on Jetson.
+- [ ] Prove a DMA-BUF/external-memory import before advertising direct import.
 
 No callable pose provider is declared yet, so no incomplete inference branch can
 be mistaken for successful production execution.
@@ -37,15 +50,20 @@ be mistaken for successful production execution.
 
 | Check | Current evidence |
 |---|---|
-| macOS unavailable, configuration, and lifecycle behavior | 8 tests passed with `xcodebuild test` and the 2026-07-17 Swift 6.4 snapshot |
-| macOS sanitizer behavior | The same 8 tests passed with Address Sanitizer and Thread Sanitizer |
+| macOS unavailable, configuration, and lifecycle behavior | 13 tests passed with `xcodebuild test` |
+| macOS sanitizer behavior | The same 13 tests passed with Address Sanitizer and Thread Sanitizer |
 | Regular WASM | Debug and release `OpenVisionTensorRT` target builds passed with the matching 2026-07-17 SDK |
 | Embedded WASM | Debug and release `OpenVisionTensorRT` target builds passed with the matching 2026-07-17 SDK |
 | Jetson runtime | TensorRT 10.16.2 and CUDA 13.2 reported one device |
 | Jetson sanitizer behavior | The full runtime and transfer path passed ASan and UBSan; leak detection is unavailable under Wendy device supervision |
 | TensorRT ownership | Real `IRuntime` creation and destruction passed on Jetson |
-| Representative H2D transfer | 4,147,200 bytes; 110/110 copies; p50 0.170080 ms; p95 0.171040 ms |
-| Representative H2D throughput | p50 24.384 GB/s; p95 24.247 GB/s |
-| Transfer ownership | Host registration, source-address preservation, input-consumed event, and byte verification passed |
+| Representative H2D transfer | 4,147,200 bytes; 110/110 copies; p50 0.169664 ms; p95 0.170720 ms |
+| Representative H2D throughput | p50 24.444 GB/s; p95 24.292 GB/s |
+| Transfer ownership probe | Host registration, source-address preservation, input-consumed event, and byte verification passed |
 | Transfer allocation | Two pre-warm-up host buffers, one device buffer, zero frame-sized allocations after warm-up |
+| RG10 differential verification | 24 GPU/CPU orientation/resize cases plus one independent RGGB golden fixture; maximum absolute difference 0.00000012 |
+| RG10 GPU pipeline | 1920x1080 RG10 to 256x256 tensor including one H2D; p50 0.657248 ms; p95 0.675616 ms |
+| RG10 end-to-end preprocessing | p50 0.667455 ms; p95 0.686560 ms; one H2D, one kernel, zero explicit post-prepare frame-sized device allocations |
+| Public Swift Jetson path | `VisionImageInput` borrow, CUDA tensor lease, nonzero device address, input release, tensor release, and shutdown passed |
+| Retryable cleanup | Injected stream-synchronization failure retained a non-null owner; second destruction succeeded |
 | Model inference | Not implemented; no semantic model has been selected |

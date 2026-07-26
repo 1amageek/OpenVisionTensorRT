@@ -5,8 +5,10 @@
 OpenVisionTensorRT imports OpenVision. OpenVision never imports this package.
 Camera capture remains in OpenAVFoundation camera drivers.
 
-The C++ boundary exposes opaque handles only. Swift actors own those handles,
-and raw TensorRT or CUDA pointers never appear in public Swift API.
+The C++ boundary exposes opaque owners and a non-owning device-tensor view.
+Swift actors own the opaque handles. The public Swift tensor exposes its device
+address only through a scoped closure and retains the provider owner until its
+explicit completion-fenced lease is released.
 
 On Linux, the shim resolves CUDA 13 and TensorRT 10 symbols with `dlopen` and
 `dlsym`. This keeps the Swift package buildable on non-NVIDIA hosts without
@@ -27,23 +29,35 @@ shutdown clears the handle before calling the C destructor, preventing
 reentrant double destruction. Actor deinitialization destroys an unconsumed
 handle.
 
-## Planned hot path
+## Implemented RG10 preprocessing path
 
 ```text
 RG10 V4L2 lease
-    -> register the borrowed host address
-        -> one asynchronous H2D transfer
-            -> synchronize the input-consumed event
-                -> release source input
-            -> CUDA demosaic / rotate / resize / normalize
-                -> preallocated TensorRT execution context
-                    -> compact OpenVision joints
+    -> borrow the existing OpenVision bytes
+        -> one synchronous H2D transfer inside the borrow
+            -> release source input
+                -> fused CUDA linearize / demosaic / orient / resize
+                    -> color transform / sRGB / normalize / layout
+                        -> completion-fenced device tensor lease
 ```
 
-Input, preprocessing, output, and workspace device allocations will be created
-during model preparation and reused. No frame-sized allocation is allowed after
-warm-up. Direct import will be advertised only after a DMA-BUF or external
-memory path is proven on the actual Jetson camera storage.
+NVRTC compiles the model-independent fused kernel once during preprocessor
+creation. PTX loading, the non-blocking stream, two events, the RG10 input
+buffer, output tensor, and calibration/configuration buffer are all prepared
+before frame submission. A frame performs one H2D transfer and one kernel
+launch without an intermediate RGB/RGBA frame or a frame-sized allocation.
+The H2D operation is synchronous because `VisionImageInput` provides a scoped
+borrow: no CUDA host read may outlive that closure, including an error path.
+After the copy, all work uses provider-owned device allocations.
+
+The kernel accepts the eight OpenVision/EXIF orientations, `scaleFill`,
+`scaleFit`, and `centerCrop`, NCHW and NHWC layouts, RGB and BGR ordering,
+per-Bayer-site black levels and gains, a 3x3 color transform, optional sRGB
+transfer, and affine normalization. Unsupported hosts return typed unavailable
+evidence; no CPU fallback is selected.
+
+Direct import will be advertised only after a DMA-BUF or external-memory path
+is proven on the actual Jetson camera storage.
 
 ## CUDA transfer probe
 
@@ -78,18 +92,47 @@ The first production pipeline has the following measurable budget:
 | Sustained input rate | 1920x1080 RG10 at 30 FPS |
 | End-to-end inference latency | p95 below 33.3 ms |
 
-The source lease may be released only after the CUDA event proving that the H2D
-transfer no longer reads host memory. Preprocessing, inference, and decoding
-reuse a prepared execution slot. The eventual model-specific implementation
-must report copy count, allocation count, p50/p95 latency, host/device resident
-memory, power, and thermal state; runtime creation alone does not satisfy this
-budget.
+The source lease may be released only after the synchronous H2D transfer or an
+equivalent target-specific fence proves that GPU work no longer reads host
+memory. Preprocessing, inference, and decoding reuse a prepared execution
+slot. The eventual model-specific implementation must report copy count,
+allocation count, p50/p95 latency, host/device resident memory, power, and
+thermal state; runtime creation alone does not satisfy this budget.
 
 The 2026-07-26 Jetson probe measured the representative 4,147,200-byte source
-at 0.170080 ms p50 and 0.171040 ms p95, corresponding to 24.384 GB/s and
-24.247 GB/s. All 110 H2D submissions used one copy each, no frame-sized
+at 0.169664 ms p50 and 0.170720 ms p95, corresponding to 24.444 GB/s and
+24.292 GB/s. All 110 H2D submissions used one copy each, no frame-sized
 allocation occurred after warm-up, and address preservation, completion-event
 ownership, and byte verification passed.
+
+The fused 1920x1080 RG10 to 256x256 NCHW pipeline, including the one H2D copy,
+measured 0.657248 ms p50 and 0.675616 ms p95 on the same Jetson. The complete
+public preprocessing API path measured 0.667455 ms p50 and 0.686560 ms p95.
+Twenty-four orientation/resize differential cases plus one independent RGGB
+golden fixture matched the CPU reference with a maximum absolute difference of
+0.00000012.
+
+The Swift deployment also passed the public path from `VisionImageInput`
+through the scoped borrow, one H2D copy, fused kernel, nonzero device-tensor
+address, input release, tensor release, and actor shutdown. A direct DMA-BUF or
+external-memory camera import remains a separate capability and will not be
+advertised until its owner and fence contract is proven on the real camera.
+The deployment fault-injected one cleanup synchronization failure, verified
+that the opaque owner remained non-null, then retried destruction successfully.
+
+## Shared-state review matrix
+
+| Logical state | Native storage/isolation | WASM storage/isolation | Embedded storage/isolation | Read/mutation | Shutdown/release |
+|---|---|---|---|---|---|
+| C preprocessor address and operation lease | `Mutex<State>` | `Mutex<State>` | `Mutex<State>` | short lease acquisition/release under the same mutex; CUDA work runs outside the critical section | destruction is excluded while a lease is active; C destroy clears the address only after successful dependency-ordered cleanup |
+| Frame sequencing and active tensor lease | `RG10Preprocessor` actor | same actor contract | same actor contract | actor-isolated `process` and `shutdown`; a live output rejects overwrite | tensor release requires the consumer's completion fence; shutdown rejects a live lease |
+| Deferred failed cleanup | `Mutex<[Entry]>` registry | same mutex contract | same mutex contract | entries are removed under lock and cleanup is attempted outside the critical section | failed owners remain retained and are retried before a new preprocessor is created |
+| CUDA work state | C owner, serialized by the Swift actor | unavailable typed boundary | unavailable typed boundary | submit/wait/destroy state machine | stream sync precedes source unregister, module unload, buffer/event/stream destruction |
+
+There is no `hasFeature(Embedded)` or `canImport(Synchronization)` branch in
+this package. The same owner, mutex, actor, and typed failure contracts compile
+for Native, regular WASM, and Embedded WASM. CUDA capability is selected by the
+C runtime boundary, not by weakening shared-state isolation.
 
 ## Verified Jetson runtime boundary
 
@@ -97,4 +140,6 @@ The Wendy deployment cross-compiles the exact package shim with pinned
 TensorRT 10.16 headers and executes it using the Jetson GPU entitlement. On
 WendyOS 0.18.1 / JetPack 7.2 it verified TensorRT 10.16.2, CUDA runtime and
 driver 13.2, one CUDA device, and one real runtime creation/destruction cycle.
-This proves the runtime ownership boundary, not semantic pose inference.
+This now proves the runtime ownership boundary and fused RG10 preprocessing
+through both the C ABI and public Swift API. It does not prove semantic pose
+inference or a real camera lease; those remain separate milestones.
