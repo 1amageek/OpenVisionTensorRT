@@ -13,5 +13,8 @@ public enum TensorRTRuntimeStatus: Int32, Sendable, Hashable {
     case engineArtifactFailure = 11
     case engineChecksumMismatch = 12
     case engineDeserializationFailure = 13
+    case engineExecutionSetupFailure = 14
+    case engineExecutionFailure = 15
+    case outputCapacityExceeded = 16
     case unknown = -1
 }

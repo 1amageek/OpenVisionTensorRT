@@ -22,7 +22,10 @@ typedef enum OVTRTStatus {
     OVTRTStatusResourceBusy = 10,
     OVTRTStatusEngineArtifactFailure = 11,
     OVTRTStatusEngineChecksumMismatch = 12,
-    OVTRTStatusEngineDeserializationFailure = 13
+    OVTRTStatusEngineDeserializationFailure = 13,
+    OVTRTStatusEngineExecutionSetupFailure = 14,
+    OVTRTStatusEngineExecutionFailure = 15,
+    OVTRTStatusOutputCapacityExceeded = 16
 } OVTRTStatus;
 
 typedef struct OVTRTProbeResult {
@@ -95,6 +98,42 @@ typedef struct OVTRTEngineTensorInfo {
     OVTRTTensorElementType elementType;
     int32_t rank;
 } OVTRTEngineTensorInfo;
+
+typedef enum OVTRTEngineExecutionStage {
+    OVTRTEngineExecutionStageNone = 0,
+    OVTRTEngineExecutionStageConfiguration = 1,
+    OVTRTEngineExecutionStageContextCreation = 2,
+    OVTRTEngineExecutionStageStreamCreation = 3,
+    OVTRTEngineExecutionStageEventCreation = 4,
+    OVTRTEngineExecutionStageShapeConfiguration = 5,
+    OVTRTEngineExecutionStageOutputAllocation = 6,
+    OVTRTEngineExecutionStageTensorBinding = 7,
+    OVTRTEngineExecutionStageEnqueue = 8,
+    OVTRTEngineExecutionStageSynchronization = 9,
+    OVTRTEngineExecutionStageOutputInspection = 10,
+    OVTRTEngineExecutionStageCleanup = 11
+} OVTRTEngineExecutionStage;
+
+typedef struct OVTRTEngineExecutionResult {
+    OVTRTEngineExecutionStage failureStage;
+    uint32_t outputTensorCount;
+    uint32_t persistentDeviceAllocationCount;
+    uint32_t frameDeviceAllocationCount;
+    uint32_t batchSize;
+    uint64_t persistentDeviceAllocationByteCount;
+    uint64_t inputByteCount;
+    uint64_t outputByteCount;
+    uint64_t submissionCount;
+    float inferenceMilliseconds;
+} OVTRTEngineExecutionResult;
+
+typedef struct OVTRTEngineOutputView {
+    void *deviceAddress;
+    uint64_t byteCount;
+    uint64_t elementCount;
+    OVTRTTensorElementType elementType;
+    int32_t rank;
+} OVTRTEngineOutputView;
 
 typedef enum OVTRTCUDATransferStage {
     OVTRTCUDATransferStageNone = 0,
@@ -373,6 +412,40 @@ OVTRTStatus ovtrt_engine_tensor_dimension(
     uint32_t axis,
     OVTRTShapeSelector selector,
     int64_t *dimension
+);
+
+OVTRTStatus ovtrt_engine_prepare_execution(
+    OVTRTEngine *engine,
+    uint64_t const *outputCapacityByteCounts,
+    uint32_t outputCapacityCount,
+    OVTRTEngineExecutionResult *result
+);
+
+OVTRTStatus ovtrt_engine_execute(
+    OVTRTEngine *engine,
+    void const *inputDeviceAddress,
+    uint64_t inputByteCount,
+    int64_t const *inputDimensions,
+    uint32_t inputRank,
+    OVTRTEngineExecutionResult *result
+);
+
+OVTRTStatus ovtrt_engine_output(
+    OVTRTEngine *engine,
+    uint32_t outputIndex,
+    OVTRTEngineOutputView *view
+);
+
+OVTRTStatus ovtrt_engine_output_dimension(
+    OVTRTEngine *engine,
+    uint32_t outputIndex,
+    uint32_t axis,
+    int64_t *dimension
+);
+
+OVTRTStatus ovtrt_engine_release_execution(
+    OVTRTEngine *engine,
+    OVTRTEngineExecutionResult *result
 );
 
 void ovtrt_engine_destroy(OVTRTEngine *engine);

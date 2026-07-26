@@ -10,9 +10,13 @@ ASAN_OPTIONS=detect_leaks=0 \
     >/dev/null
 
 c_result=$(/usr/local/bin/openvision-tensorrt-runtime-probe)
-swift_result=$(/usr/local/bin/openvision-tensorrt-swift-probe)
 
 if [ -f "${detector_plan}" ] && [ -f "${pose_plan}" ]; then
+    swift_result=$(
+        /usr/local/bin/openvision-tensorrt-swift-probe \
+            "${detector_plan}" \
+            "${OPENVISION_DETECTOR_PLAN_SHA256}"
+    )
     engine_result=$(
         /usr/local/bin/openvision-tensorrt-engine-probe \
             "${detector_plan}" \
@@ -33,6 +37,9 @@ if [ -f "${detector_plan}" ] && [ -f "${pose_plan}" ]; then
             "${OPENVISION_DETECTOR_PLAN_SHA256}"
     )
 elif [ ! -f "${detector_plan}" ] && [ ! -f "${pose_plan}" ]; then
+    swift_result=$(
+        /usr/local/bin/openvision-tensorrt-swift-probe
+    )
     engine_result='{"status":"notRequested"}'
     checksum_failure_result='{"status":"notRequested"}'
     semantic_mismatch_result='{"status":"notRequested"}'

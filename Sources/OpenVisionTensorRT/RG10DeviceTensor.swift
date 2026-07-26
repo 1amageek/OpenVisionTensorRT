@@ -9,7 +9,10 @@ import OpenVision
 /// after the operation's completion fence has passed. The address must not be
 /// stored or returned as an independently owned pointer. Releasing this tensor
 /// allows its preprocessor to overwrite the reusable output allocation.
-public final class RG10DeviceTensor: Sendable {
+public final class RG10DeviceTensor:
+    Sendable,
+    TensorRTDeviceInput
+{
     public let byteCount: Int
     public let elementCount: Int
     public let width: Int
@@ -74,5 +77,17 @@ public final class RG10DeviceTensor: Sendable {
 
     public func release() throws(RG10DeviceTensorError) {
         try lease.release()
+    }
+
+    public func withTensorRTDeviceAddress(
+        _ body: (UInt, Int) -> Void
+    ) throws(TensorRTDeviceInputError) {
+        do {
+            try withDeviceAddress(body)
+        } catch RG10DeviceTensorError.released {
+            throw .released
+        } catch {
+            throw .inaccessible
+        }
     }
 }

@@ -45,12 +45,19 @@
 - [x] Runtime, CUDA, compute-capability, tensor, shape, and profile validation
 - [x] Swift Jetson engine-load probe for both selected model stages
 - [x] Jetson typed checksum and semantic-binding negative probes
+- [x] Reusable TensorRT execution context, CUDA stream, and timing events
+- [x] Manifest-bounded persistent output allocations for dynamic tensors
+- [x] Scoped device-input and device-output leases without tensor copies
+- [x] TensorRT detector submission through the public Swift API
+- [x] Output-address reuse across warm-up and 100 measured submissions
+- [x] Typed output-capacity, execution-stage, borrow, and cleanup failures
+- [x] Retryable explicit execution-resource cleanup
 
 ## Incomplete production work
 
 - [ ] Implement detector decode, bounded ROI selection, and GPU region affine.
-- [ ] Implement reusable TensorRT execution contexts and inference workspace.
-- [ ] Implement request execution and observation decoding.
+- [ ] Execute DWPose through the Swift path after GPU region-affine preparation.
+- [ ] Implement SimCC GPU decode and compact observation readback.
 - [ ] Conform the production provider to `VisionProvider`.
 - [ ] Run the public provider with a real camera frame lease.
 - [ ] Measure sustained 1920x1080 RG10 at 30 FPS on Jetson.
@@ -63,8 +70,8 @@ be mistaken for successful production execution.
 
 | Check | Current evidence |
 |---|---|
-| macOS unavailable, configuration, lifecycle, semantic manifest, and engine-binding behavior | 21 tests passed with `xcodebuild test` |
-| macOS sanitizer behavior | The same 21 tests passed with Address Sanitizer and Thread Sanitizer |
+| macOS unavailable, configuration, lifecycle, semantic manifest, engine-binding, and output-lease behavior | 23 tests passed with `xcodebuild test` |
+| macOS sanitizer behavior | The same 23 tests passed with Address Sanitizer and Thread Sanitizer |
 | Regular WASM | Debug and release `OpenVisionTensorRT` target builds passed with `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a` toolchain and matching SDK |
 | Embedded WASM | Debug and release `OpenVisionTensorRT` target builds passed with the same 2026-07-17 toolchain and Embedded SDK |
 | Exact snapshot identity | Swift `9517428e7f4b63e`, LLVM `3704913b9103f85`, target `wasm32-unknown-wasip1` |
@@ -86,7 +93,10 @@ be mistaken for successful production execution.
 | Independent engine execution | `trtexec` executed both plans on the Jetson GPU: detector batch 1 p50 3.46277 ms; pose batch 1 p50 2.33325 ms; pose batch 4 p50 5.73291 ms |
 | Swift engine acceptance | Both plans passed mmap SHA-256, deserialization, exact runtime/device compatibility, tensor name/mode/type/shape, and pose profile validation |
 | Typed Jetson failures | Wrong SHA-256 produced `engineChecksumMismatch` at `checksum`; swapped detector output meanings produced `incompatibleArtifact` for `labels` element type |
-| Model inference | TensorRT GPU execution is independently proven, but the reusable Swift execution context and OpenVision provider path are not implemented yet |
+| Swift detector execution | Three final-code runs used 10 warm-up and 100 measured submissions each. GPU inference p50 was 2.533344–2.569632 ms and p95 was 2.574208–2.859296 ms |
+| Detector execution memory | The two dynamic detector outputs use 2,800 persistent device bytes; output addresses remained identical and the package performed zero explicit per-frame device allocations across 110 submissions |
+| Current complete GPU slice | `VisionImageInput` borrow -> one RG10 H2D -> fused CUDA preprocessing -> device-tensor lease -> TensorRT detector enqueue -> completion-fenced reusable device outputs |
+| Remaining inference path | Detector decode, GPU ROI affine, DWPose Swift execution, SimCC decode, observation construction, and the OpenVision provider are not implemented yet |
 
 ## Release gates beyond implementation
 

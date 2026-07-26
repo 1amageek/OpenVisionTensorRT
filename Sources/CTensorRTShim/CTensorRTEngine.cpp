@@ -52,6 +52,21 @@ namespace {
 using CUDAVersionFunction = int (*)(int *);
 using CUDADeviceCountFunction = int (*)(int *);
 using CUDADeviceAttributeFunction = int (*)(int *, int, int);
+using CUDAStream = cudaStream_t;
+using CUDAEvent = cudaEvent_t;
+using CUDAMallocFunction = int (*)(void **, size_t);
+using CUDAFreeFunction = int (*)(void *);
+using CUDAStreamCreateWithFlagsFunction =
+    int (*)(CUDAStream *, unsigned int);
+using CUDAStreamDestroyFunction = int (*)(CUDAStream);
+using CUDAStreamSynchronizeFunction = int (*)(CUDAStream);
+using CUDAEventCreateWithFlagsFunction =
+    int (*)(CUDAEvent *, unsigned int);
+using CUDAEventDestroyFunction = int (*)(CUDAEvent);
+using CUDAEventRecordFunction = int (*)(CUDAEvent, CUDAStream);
+using CUDAEventSynchronizeFunction = int (*)(CUDAEvent);
+using CUDAEventElapsedTimeFunction =
+    int (*)(float *, CUDAEvent, CUDAEvent);
 using TensorRTVersionFunction = int32_t (*)() noexcept;
 using TensorRTRuntimeCreateFunction =
     void *(*)(void *, int32_t) noexcept;
@@ -59,6 +74,10 @@ using TensorRTRuntimeCreateFunction =
 constexpr int CUDA_SUCCESS = 0;
 constexpr int CUDA_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75;
 constexpr int CUDA_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR = 76;
+constexpr unsigned int CUDA_STREAM_NON_BLOCKING = 1;
+constexpr unsigned int CUDA_EVENT_DEFAULT = 0;
+constexpr uint64_t MAXIMUM_EXECUTION_DEVICE_BYTE_COUNT =
+    1024ULL * 1024ULL * 1024ULL;
 constexpr size_t SHA256_BLOCK_BYTE_COUNT = 64;
 constexpr size_t SHA256_DIGEST_BYTE_COUNT = 32;
 
@@ -343,6 +362,163 @@ OVTRTTensorElementType elementType(
     return OVTRTTensorElementTypeUnknown;
 }
 
+uint64_t elementByteCount(
+    nvinfer1::DataType value
+) noexcept {
+    switch (value) {
+    case nvinfer1::DataType::kFLOAT:
+    case nvinfer1::DataType::kINT32:
+        return 4;
+    case nvinfer1::DataType::kHALF:
+    case nvinfer1::DataType::kBF16:
+        return 2;
+    case nvinfer1::DataType::kINT8:
+    case nvinfer1::DataType::kBOOL:
+    case nvinfer1::DataType::kUINT8:
+    case nvinfer1::DataType::kFP8:
+    case nvinfer1::DataType::kE8M0:
+        return 1;
+    case nvinfer1::DataType::kINT64:
+        return 8;
+    case nvinfer1::DataType::kINT4:
+    case nvinfer1::DataType::kFP4:
+        return 0;
+    }
+    return 0;
+}
+
+bool dimensionsElementCount(
+    nvinfer1::Dims const &dimensions,
+    uint64_t *elementCount
+) noexcept {
+    if (
+        elementCount == nullptr ||
+        dimensions.nbDims <= 0 ||
+        dimensions.nbDims > nvinfer1::Dims::MAX_DIMS
+    ) {
+        return false;
+    }
+    uint64_t count = 1;
+    for (int32_t axis = 0; axis < dimensions.nbDims; ++axis) {
+        int64_t dimension = dimensions.d[axis];
+        if (
+            dimension < 0 ||
+            static_cast<uint64_t>(dimension) >
+                std::numeric_limits<uint64_t>::max() / count
+        ) {
+            return false;
+        }
+        count *= static_cast<uint64_t>(dimension);
+    }
+    *elementCount = count;
+    return true;
+}
+
+class FixedOutputAllocator final :
+    public nvinfer1::IOutputAllocator
+{
+public:
+    FixedOutputAllocator(
+        void *address,
+        uint64_t capacity
+    ) noexcept
+        : address_(address),
+          capacity_(capacity) {}
+
+    void *reallocateOutput(
+        char const *tensorName,
+        void *currentMemory,
+        uint64_t size,
+        uint64_t alignment
+    ) noexcept override {
+        (void)tensorName;
+        (void)alignment;
+        return allocation(currentMemory, size);
+    }
+
+    void *reallocateOutputAsync(
+        char const *tensorName,
+        void *currentMemory,
+        uint64_t size,
+        uint64_t alignment,
+        cudaStream_t stream
+    ) noexcept override {
+        (void)tensorName;
+        (void)alignment;
+        (void)stream;
+        return allocation(currentMemory, size);
+    }
+
+    void notifyShape(
+        char const *tensorName,
+        nvinfer1::Dims const &dimensions
+    ) noexcept override {
+        (void)tensorName;
+        finalDimensions_ = dimensions;
+        shapeWasNotified_ = true;
+    }
+
+    void reset() noexcept {
+        requestedByteCount_ = 0;
+        capacityWasExceeded_ = false;
+        shapeWasNotified_ = false;
+        finalDimensions_ = nvinfer1::Dims{};
+    }
+
+    uint64_t requestedByteCount() const noexcept {
+        return requestedByteCount_;
+    }
+
+    bool capacityWasExceeded() const noexcept {
+        return capacityWasExceeded_;
+    }
+
+    bool shapeWasNotified() const noexcept {
+        return shapeWasNotified_;
+    }
+
+    nvinfer1::Dims finalDimensions() const noexcept {
+        return finalDimensions_;
+    }
+
+private:
+    void *allocation(
+        void *currentMemory,
+        uint64_t size
+    ) noexcept {
+        requestedByteCount_ = size;
+        if (
+            size > capacity_ ||
+            (
+                currentMemory != nullptr &&
+                currentMemory != address_
+            )
+        ) {
+            capacityWasExceeded_ = true;
+            return nullptr;
+        }
+        return address_;
+    }
+
+    void *address_;
+    uint64_t capacity_;
+    uint64_t requestedByteCount_{0};
+    bool capacityWasExceeded_{false};
+    bool shapeWasNotified_{false};
+    nvinfer1::Dims finalDimensions_{};
+};
+
+struct ExecutionOutput {
+    char const *name{nullptr};
+    void *deviceAddress{nullptr};
+    uint64_t capacityByteCount{0};
+    uint64_t byteCount{0};
+    uint64_t elementCount{0};
+    nvinfer1::DataType dataType{nvinfer1::DataType::kFLOAT};
+    nvinfer1::Dims dimensions{};
+    FixedOutputAllocator *allocator{nullptr};
+};
+
 }  // namespace
 
 struct OVTRTEngine {
@@ -357,11 +533,148 @@ struct OVTRTEngine {
     nvinfer1::ICudaEngine *engine{nullptr};
     void *tensorRTLibrary{nullptr};
     void *cudaRuntimeLibrary{nullptr};
+    CUDAMallocFunction cudaMalloc{nullptr};
+    CUDAFreeFunction cudaFree{nullptr};
+    CUDAStreamCreateWithFlagsFunction cudaStreamCreateWithFlags{nullptr};
+    CUDAStreamDestroyFunction cudaStreamDestroy{nullptr};
+    CUDAStreamSynchronizeFunction cudaStreamSynchronize{nullptr};
+    CUDAEventCreateWithFlagsFunction cudaEventCreateWithFlags{nullptr};
+    CUDAEventDestroyFunction cudaEventDestroy{nullptr};
+    CUDAEventRecordFunction cudaEventRecord{nullptr};
+    CUDAEventSynchronizeFunction cudaEventSynchronize{nullptr};
+    CUDAEventElapsedTimeFunction cudaEventElapsedTime{nullptr};
+    nvinfer1::IExecutionContext *executionContext{nullptr};
+    CUDAStream executionStream{nullptr};
+    CUDAEvent executionStart{nullptr};
+    CUDAEvent executionStop{nullptr};
+    ExecutionOutput *outputs{nullptr};
+    uint32_t outputCount{0};
+    char const *inputName{nullptr};
+    nvinfer1::Dims maximumInputDimensions{};
+    uint64_t persistentDeviceAllocationByteCount{0};
+    uint64_t submissionCount{0};
 };
 #else
 struct OVTRTEngine {
     uint8_t unavailable;
 };
+#endif
+
+#if OVTRT_HAS_ENGINE_RUNTIME
+namespace {
+
+void populateExecutionResources(
+    OVTRTEngine const *engine,
+    OVTRTEngineExecutionResult *result
+) noexcept {
+    result->outputTensorCount = engine->outputCount;
+    result->persistentDeviceAllocationCount =
+        engine->outputCount;
+    result->persistentDeviceAllocationByteCount =
+        engine->persistentDeviceAllocationByteCount;
+    result->submissionCount = engine->submissionCount;
+}
+
+OVTRTStatus releaseExecutionResources(
+    OVTRTEngine *engine,
+    OVTRTEngineExecutionResult *result
+) noexcept {
+    if (
+        engine->executionStream != nullptr &&
+        engine->cudaStreamSynchronize(
+            engine->executionStream
+        ) != CUDA_SUCCESS
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageCleanup;
+        populateExecutionResources(engine, result);
+        return OVTRTStatusCUDARuntimeFailure;
+    }
+
+    delete engine->executionContext;
+    engine->executionContext = nullptr;
+
+    bool cleanupFailed = false;
+    if (engine->outputs != nullptr) {
+        for (
+            uint32_t index = 0;
+            index < engine->outputCount;
+            ++index
+        ) {
+            ExecutionOutput &output = engine->outputs[index];
+            delete output.allocator;
+            output.allocator = nullptr;
+            if (
+                output.deviceAddress != nullptr &&
+                engine->cudaFree(output.deviceAddress) !=
+                    CUDA_SUCCESS
+            ) {
+                cleanupFailed = true;
+            } else {
+                output.deviceAddress = nullptr;
+            }
+        }
+    }
+    if (
+        engine->executionStart != nullptr &&
+        engine->cudaEventDestroy(engine->executionStart) !=
+            CUDA_SUCCESS
+    ) {
+        cleanupFailed = true;
+    } else {
+        engine->executionStart = nullptr;
+    }
+    if (
+        engine->executionStop != nullptr &&
+        engine->cudaEventDestroy(engine->executionStop) !=
+            CUDA_SUCCESS
+    ) {
+        cleanupFailed = true;
+    } else {
+        engine->executionStop = nullptr;
+    }
+    if (
+        engine->executionStream != nullptr &&
+        engine->cudaStreamDestroy(engine->executionStream) !=
+            CUDA_SUCCESS
+    ) {
+        cleanupFailed = true;
+    } else {
+        engine->executionStream = nullptr;
+    }
+    if (cleanupFailed) {
+        result->failureStage =
+            OVTRTEngineExecutionStageCleanup;
+        populateExecutionResources(engine, result);
+        return OVTRTStatusCUDARuntimeFailure;
+    }
+
+    delete[] engine->outputs;
+    engine->outputs = nullptr;
+    engine->outputCount = 0;
+    engine->inputName = nullptr;
+    engine->maximumInputDimensions = nvinfer1::Dims{};
+    engine->persistentDeviceAllocationByteCount = 0;
+    populateExecutionResources(engine, result);
+    return OVTRTStatusSuccess;
+}
+
+OVTRTStatus statusAfterPreparationCleanup(
+    OVTRTEngine *engine,
+    OVTRTEngineExecutionResult *result,
+    OVTRTStatus preparationStatus
+) noexcept {
+    OVTRTEngineExecutionResult cleanup{};
+    OVTRTStatus cleanupStatus =
+        releaseExecutionResources(engine, &cleanup);
+    if (cleanupStatus != OVTRTStatusSuccess) {
+        *result = cleanup;
+        return cleanupStatus;
+    }
+    return preparationStatus;
+}
+
+}  // namespace
 #endif
 
 OVTRTStatus ovtrt_engine_create(
@@ -438,12 +751,70 @@ OVTRTStatus ovtrt_engine_create(
             cudaRuntimeLibrary,
             "cudaDeviceGetAttribute"
         );
+    auto cudaMalloc = loadFunction<CUDAMallocFunction>(
+        cudaRuntimeLibrary,
+        "cudaMalloc"
+    );
+    auto cudaFree = loadFunction<CUDAFreeFunction>(
+        cudaRuntimeLibrary,
+        "cudaFree"
+    );
+    auto cudaStreamCreateWithFlags =
+        loadFunction<CUDAStreamCreateWithFlagsFunction>(
+            cudaRuntimeLibrary,
+            "cudaStreamCreateWithFlags"
+        );
+    auto cudaStreamDestroy =
+        loadFunction<CUDAStreamDestroyFunction>(
+            cudaRuntimeLibrary,
+            "cudaStreamDestroy"
+        );
+    auto cudaStreamSynchronize =
+        loadFunction<CUDAStreamSynchronizeFunction>(
+            cudaRuntimeLibrary,
+            "cudaStreamSynchronize"
+        );
+    auto cudaEventCreateWithFlags =
+        loadFunction<CUDAEventCreateWithFlagsFunction>(
+            cudaRuntimeLibrary,
+            "cudaEventCreateWithFlags"
+        );
+    auto cudaEventDestroy =
+        loadFunction<CUDAEventDestroyFunction>(
+            cudaRuntimeLibrary,
+            "cudaEventDestroy"
+        );
+    auto cudaEventRecord =
+        loadFunction<CUDAEventRecordFunction>(
+            cudaRuntimeLibrary,
+            "cudaEventRecord"
+        );
+    auto cudaEventSynchronize =
+        loadFunction<CUDAEventSynchronizeFunction>(
+            cudaRuntimeLibrary,
+            "cudaEventSynchronize"
+        );
+    auto cudaEventElapsedTime =
+        loadFunction<CUDAEventElapsedTimeFunction>(
+            cudaRuntimeLibrary,
+            "cudaEventElapsedTime"
+        );
     if (
         getInferLibVersion == nullptr ||
         createInferRuntime == nullptr ||
         cudaRuntimeGetVersion == nullptr ||
         cudaGetDeviceCount == nullptr ||
-        cudaDeviceGetAttribute == nullptr
+        cudaDeviceGetAttribute == nullptr ||
+        cudaMalloc == nullptr ||
+        cudaFree == nullptr ||
+        cudaStreamCreateWithFlags == nullptr ||
+        cudaStreamDestroy == nullptr ||
+        cudaStreamSynchronize == nullptr ||
+        cudaEventCreateWithFlags == nullptr ||
+        cudaEventDestroy == nullptr ||
+        cudaEventRecord == nullptr ||
+        cudaEventSynchronize == nullptr ||
+        cudaEventElapsedTime == nullptr
     ) {
         result->failureStage = OVTRTEngineLoadStageSymbolLoad;
         dlclose(cudaRuntimeLibrary);
@@ -551,6 +922,18 @@ OVTRTStatus ovtrt_engine_create(
     }
     owner->tensorRTLibrary = tensorRTLibrary;
     owner->cudaRuntimeLibrary = cudaRuntimeLibrary;
+    owner->cudaMalloc = cudaMalloc;
+    owner->cudaFree = cudaFree;
+    owner->cudaStreamCreateWithFlags =
+        cudaStreamCreateWithFlags;
+    owner->cudaStreamDestroy = cudaStreamDestroy;
+    owner->cudaStreamSynchronize = cudaStreamSynchronize;
+    owner->cudaEventCreateWithFlags =
+        cudaEventCreateWithFlags;
+    owner->cudaEventDestroy = cudaEventDestroy;
+    owner->cudaEventRecord = cudaEventRecord;
+    owner->cudaEventSynchronize = cudaEventSynchronize;
+    owner->cudaEventElapsedTime = cudaEventElapsedTime;
     owner->runtime = static_cast<nvinfer1::IRuntime *>(
         createInferRuntime(&owner->logger, NV_TENSORRT_VERSION)
     );
@@ -758,11 +1141,629 @@ OVTRTStatus ovtrt_engine_tensor_dimension(
 #endif
 }
 
+OVTRTStatus ovtrt_engine_prepare_execution(
+    OVTRTEngine *engine,
+    uint64_t const *outputCapacityByteCounts,
+    uint32_t outputCapacityCount,
+    OVTRTEngineExecutionResult *result
+) {
+    if (
+        engine == nullptr ||
+        outputCapacityByteCounts == nullptr ||
+        outputCapacityCount == 0 ||
+        result == nullptr
+    ) {
+        return OVTRTStatusInvalidArgument;
+    }
+    *result = OVTRTEngineExecutionResult{};
+#if OVTRT_HAS_ENGINE_RUNTIME
+    if (
+        engine->executionContext != nullptr ||
+        engine->outputs != nullptr ||
+        engine->executionStream != nullptr
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageConfiguration;
+        populateExecutionResources(engine, result);
+        return OVTRTStatusResourceBusy;
+    }
+
+    int32_t tensorCount = engine->engine->getNbIOTensors();
+    uint32_t inputCount = 0;
+    uint32_t outputCount = 0;
+    for (int32_t index = 0; index < tensorCount; ++index) {
+        char const *name = engine->engine->getIOTensorName(index);
+        if (name == nullptr) {
+            result->failureStage =
+                OVTRTEngineExecutionStageConfiguration;
+            return OVTRTStatusEngineExecutionSetupFailure;
+        }
+        nvinfer1::TensorIOMode mode =
+            engine->engine->getTensorIOMode(name);
+        if (mode == nvinfer1::TensorIOMode::kINPUT) {
+            ++inputCount;
+            engine->inputName = name;
+        } else if (
+            mode == nvinfer1::TensorIOMode::kOUTPUT
+        ) {
+            ++outputCount;
+        }
+    }
+    if (
+        inputCount != 1 ||
+        outputCount == 0 ||
+        outputCount > 64 ||
+        outputCapacityCount != outputCount
+    ) {
+        engine->inputName = nullptr;
+        result->failureStage =
+            OVTRTEngineExecutionStageConfiguration;
+        return OVTRTStatusEngineExecutionSetupFailure;
+    }
+
+    engine->executionContext =
+        engine->engine->createExecutionContext(
+            nvinfer1::ExecutionContextAllocationStrategy::kSTATIC
+        );
+    if (engine->executionContext == nullptr) {
+        engine->inputName = nullptr;
+        result->failureStage =
+            OVTRTEngineExecutionStageContextCreation;
+        return OVTRTStatusEngineExecutionSetupFailure;
+    }
+    if (
+        engine->cudaStreamCreateWithFlags(
+            &engine->executionStream,
+            CUDA_STREAM_NON_BLOCKING
+        ) != CUDA_SUCCESS
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageStreamCreation;
+        return statusAfterPreparationCleanup(
+            engine,
+            result,
+            OVTRTStatusCUDARuntimeFailure
+        );
+    }
+    if (
+        engine->cudaEventCreateWithFlags(
+            &engine->executionStart,
+            CUDA_EVENT_DEFAULT
+        ) != CUDA_SUCCESS ||
+        engine->cudaEventCreateWithFlags(
+            &engine->executionStop,
+            CUDA_EVENT_DEFAULT
+        ) != CUDA_SUCCESS
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageEventCreation;
+        return statusAfterPreparationCleanup(
+            engine,
+            result,
+            OVTRTStatusCUDARuntimeFailure
+        );
+    }
+
+    nvinfer1::Dims declaredInput =
+        engine->engine->getTensorShape(engine->inputName);
+    if (declaredInput.nbDims <= 0) {
+        result->failureStage =
+            OVTRTEngineExecutionStageShapeConfiguration;
+        return statusAfterPreparationCleanup(
+            engine,
+            result,
+            OVTRTStatusEngineExecutionSetupFailure
+        );
+    }
+    nvinfer1::Dims maximumInput = declaredInput;
+    bool hasDynamicDimension = false;
+    for (
+        int32_t axis = 0;
+        axis < declaredInput.nbDims;
+        ++axis
+    ) {
+        hasDynamicDimension =
+            hasDynamicDimension ||
+            declaredInput.d[axis] < 0;
+    }
+    if (hasDynamicDimension) {
+        maximumInput = engine->engine->getProfileShape(
+            engine->inputName,
+            0,
+            nvinfer1::OptProfileSelector::kMAX
+        );
+    }
+    if (maximumInput.nbDims != declaredInput.nbDims) {
+        result->failureStage =
+            OVTRTEngineExecutionStageShapeConfiguration;
+        return statusAfterPreparationCleanup(
+            engine,
+            result,
+            OVTRTStatusEngineExecutionSetupFailure
+        );
+    }
+    for (
+        int32_t axis = 0;
+        axis < declaredInput.nbDims;
+        ++axis
+    ) {
+        if (declaredInput.d[axis] >= 0) {
+            maximumInput.d[axis] = declaredInput.d[axis];
+        } else if (maximumInput.d[axis] <= 0) {
+            result->failureStage =
+                OVTRTEngineExecutionStageShapeConfiguration;
+            return statusAfterPreparationCleanup(
+                engine,
+                result,
+                OVTRTStatusEngineExecutionSetupFailure
+            );
+        }
+    }
+    if (
+        !engine->executionContext->setInputShape(
+            engine->inputName,
+            maximumInput
+        )
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageShapeConfiguration;
+        return statusAfterPreparationCleanup(
+            engine,
+            result,
+            OVTRTStatusEngineExecutionSetupFailure
+        );
+    }
+    engine->maximumInputDimensions = maximumInput;
+
+    engine->outputs =
+        new (std::nothrow) ExecutionOutput[outputCount];
+    if (engine->outputs == nullptr) {
+        result->failureStage =
+            OVTRTEngineExecutionStageOutputAllocation;
+        return statusAfterPreparationCleanup(
+            engine,
+            result,
+            OVTRTStatusAllocationFailed
+        );
+    }
+    engine->outputCount = outputCount;
+    uint32_t outputIndex = 0;
+    for (int32_t index = 0; index < tensorCount; ++index) {
+        char const *name = engine->engine->getIOTensorName(index);
+        if (
+            engine->engine->getTensorIOMode(name) !=
+                nvinfer1::TensorIOMode::kOUTPUT
+        ) {
+            continue;
+        }
+        uint64_t maximumByteCount =
+            outputCapacityByteCounts[outputIndex];
+        if (
+            maximumByteCount == 0 ||
+            maximumByteCount >
+                MAXIMUM_EXECUTION_DEVICE_BYTE_COUNT ||
+            maximumByteCount >
+                MAXIMUM_EXECUTION_DEVICE_BYTE_COUNT -
+                engine->persistentDeviceAllocationByteCount
+        ) {
+            result->failureStage =
+                OVTRTEngineExecutionStageOutputAllocation;
+            return statusAfterPreparationCleanup(
+                engine,
+                result,
+                OVTRTStatusEngineExecutionSetupFailure
+            );
+        }
+        ExecutionOutput &output =
+            engine->outputs[outputIndex];
+        output.name = name;
+        output.dataType =
+            engine->engine->getTensorDataType(name);
+        output.capacityByteCount = maximumByteCount;
+        if (
+            output.capacityByteCount >
+                static_cast<uint64_t>(
+                    std::numeric_limits<size_t>::max()
+                ) ||
+            engine->cudaMalloc(
+                &output.deviceAddress,
+                static_cast<size_t>(output.capacityByteCount)
+            ) != CUDA_SUCCESS
+        ) {
+            result->failureStage =
+                OVTRTEngineExecutionStageOutputAllocation;
+            return statusAfterPreparationCleanup(
+                engine,
+                result,
+                OVTRTStatusAllocationFailed
+            );
+        }
+        output.allocator = new (std::nothrow)
+            FixedOutputAllocator(
+                output.deviceAddress,
+                output.capacityByteCount
+            );
+        if (output.allocator == nullptr) {
+            result->failureStage =
+                OVTRTEngineExecutionStageOutputAllocation;
+            return statusAfterPreparationCleanup(
+                engine,
+                result,
+                OVTRTStatusAllocationFailed
+            );
+        }
+        if (
+            !engine->executionContext->setTensorAddress(
+                name,
+                output.deviceAddress
+            ) ||
+            !engine->executionContext->setOutputAllocator(
+                name,
+                output.allocator
+            )
+        ) {
+            result->failureStage =
+                OVTRTEngineExecutionStageTensorBinding;
+            return statusAfterPreparationCleanup(
+                engine,
+                result,
+                OVTRTStatusEngineExecutionSetupFailure
+            );
+        }
+        engine->persistentDeviceAllocationByteCount +=
+            output.capacityByteCount;
+        ++outputIndex;
+    }
+    populateExecutionResources(engine, result);
+    result->batchSize = static_cast<uint32_t>(
+        maximumInput.d[0]
+    );
+    return OVTRTStatusSuccess;
+#else
+    result->failureStage =
+        OVTRTEngineExecutionStageContextCreation;
+    return OVTRTStatusUnavailable;
+#endif
+}
+
+OVTRTStatus ovtrt_engine_execute(
+    OVTRTEngine *engine,
+    void const *inputDeviceAddress,
+    uint64_t inputByteCount,
+    int64_t const *inputDimensions,
+    uint32_t inputRank,
+    OVTRTEngineExecutionResult *result
+) {
+    if (
+        engine == nullptr ||
+        inputDeviceAddress == nullptr ||
+        inputDimensions == nullptr ||
+        inputRank == 0 ||
+        result == nullptr
+    ) {
+        return OVTRTStatusInvalidArgument;
+    }
+    *result = OVTRTEngineExecutionResult{};
+#if OVTRT_HAS_ENGINE_RUNTIME
+    if (
+        engine->executionContext == nullptr ||
+        engine->executionStream == nullptr ||
+        engine->outputs == nullptr ||
+        engine->inputName == nullptr ||
+        inputRank != static_cast<uint32_t>(
+            engine->maximumInputDimensions.nbDims
+        )
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageConfiguration;
+        populateExecutionResources(engine, result);
+        return OVTRTStatusEngineExecutionFailure;
+    }
+
+    nvinfer1::Dims dimensions{};
+    dimensions.nbDims = static_cast<int32_t>(inputRank);
+    for (uint32_t axis = 0; axis < inputRank; ++axis) {
+        if (
+            inputDimensions[axis] <= 0 ||
+            inputDimensions[axis] >
+                engine->maximumInputDimensions.d[axis]
+        ) {
+            result->failureStage =
+                OVTRTEngineExecutionStageShapeConfiguration;
+            populateExecutionResources(engine, result);
+            return OVTRTStatusInvalidArgument;
+        }
+        dimensions.d[axis] = inputDimensions[axis];
+    }
+    uint64_t inputElementCount = 0;
+    uint64_t inputElementByteCount = elementByteCount(
+        engine->engine->getTensorDataType(engine->inputName)
+    );
+    if (
+        inputElementByteCount == 0 ||
+        !dimensionsElementCount(
+            dimensions,
+            &inputElementCount
+        ) ||
+        inputElementCount >
+            std::numeric_limits<uint64_t>::max() /
+                inputElementByteCount ||
+        inputByteCount !=
+            inputElementCount * inputElementByteCount
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageConfiguration;
+        populateExecutionResources(engine, result);
+        return OVTRTStatusInvalidArgument;
+    }
+    if (
+        !engine->executionContext->setInputShape(
+            engine->inputName,
+            dimensions
+        ) ||
+        !engine->executionContext->setInputTensorAddress(
+            engine->inputName,
+            inputDeviceAddress
+        )
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageTensorBinding;
+        populateExecutionResources(engine, result);
+        return OVTRTStatusEngineExecutionFailure;
+    }
+    for (
+        uint32_t index = 0;
+        index < engine->outputCount;
+        ++index
+    ) {
+        engine->outputs[index].allocator->reset();
+        engine->outputs[index].byteCount = 0;
+        engine->outputs[index].elementCount = 0;
+        engine->outputs[index].dimensions = nvinfer1::Dims{};
+    }
+
+    if (
+        engine->cudaEventRecord(
+            engine->executionStart,
+            engine->executionStream
+        ) != CUDA_SUCCESS
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageEnqueue;
+        populateExecutionResources(engine, result);
+        return OVTRTStatusCUDARuntimeFailure;
+    }
+    if (
+        !engine->executionContext->enqueueV3(
+            engine->executionStream
+        )
+    ) {
+        bool capacityExceeded = false;
+        for (
+            uint32_t index = 0;
+            index < engine->outputCount;
+            ++index
+        ) {
+            capacityExceeded =
+                capacityExceeded ||
+                engine->outputs[index]
+                    .allocator
+                    ->capacityWasExceeded();
+        }
+        result->failureStage =
+            OVTRTEngineExecutionStageEnqueue;
+        populateExecutionResources(engine, result);
+        return capacityExceeded
+            ? OVTRTStatusOutputCapacityExceeded
+            : OVTRTStatusEngineExecutionFailure;
+    }
+    if (
+        engine->cudaEventRecord(
+            engine->executionStop,
+            engine->executionStream
+        ) != CUDA_SUCCESS ||
+        engine->cudaEventSynchronize(
+            engine->executionStop
+        ) != CUDA_SUCCESS ||
+        engine->cudaEventElapsedTime(
+            &result->inferenceMilliseconds,
+            engine->executionStart,
+            engine->executionStop
+        ) != CUDA_SUCCESS
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageSynchronization;
+        populateExecutionResources(engine, result);
+        return OVTRTStatusCUDARuntimeFailure;
+    }
+
+    uint64_t totalOutputByteCount = 0;
+    for (
+        uint32_t index = 0;
+        index < engine->outputCount;
+        ++index
+    ) {
+        ExecutionOutput &output = engine->outputs[index];
+        if (output.allocator->capacityWasExceeded()) {
+            result->failureStage =
+                OVTRTEngineExecutionStageOutputInspection;
+            populateExecutionResources(engine, result);
+            return OVTRTStatusOutputCapacityExceeded;
+        }
+        nvinfer1::Dims outputDimensions =
+            engine->executionContext->getTensorShape(
+                output.name
+            );
+        if (
+            output.allocator->shapeWasNotified()
+        ) {
+            outputDimensions =
+                output.allocator->finalDimensions();
+        }
+        uint64_t outputElementCount = 0;
+        uint64_t outputElementByteCount =
+            elementByteCount(output.dataType);
+        if (
+            outputElementByteCount == 0 ||
+            !dimensionsElementCount(
+                outputDimensions,
+                &outputElementCount
+            ) ||
+            outputElementCount >
+                std::numeric_limits<uint64_t>::max() /
+                    outputElementByteCount
+        ) {
+            result->failureStage =
+                OVTRTEngineExecutionStageOutputInspection;
+            populateExecutionResources(engine, result);
+            return OVTRTStatusEngineExecutionFailure;
+        }
+        uint64_t outputByteCount =
+            outputElementCount * outputElementByteCount;
+        if (
+            outputByteCount > output.capacityByteCount ||
+            outputByteCount >
+                std::numeric_limits<uint64_t>::max() -
+                    totalOutputByteCount
+        ) {
+            result->failureStage =
+                OVTRTEngineExecutionStageOutputInspection;
+            populateExecutionResources(engine, result);
+            return OVTRTStatusOutputCapacityExceeded;
+        }
+        output.dimensions = outputDimensions;
+        output.elementCount = outputElementCount;
+        output.byteCount = outputByteCount;
+        totalOutputByteCount += outputByteCount;
+    }
+    ++engine->submissionCount;
+    result->batchSize = static_cast<uint32_t>(
+        dimensions.d[0]
+    );
+    result->inputByteCount = inputByteCount;
+    result->outputByteCount = totalOutputByteCount;
+    result->frameDeviceAllocationCount = 0;
+    populateExecutionResources(engine, result);
+    return OVTRTStatusSuccess;
+#else
+    (void)inputByteCount;
+    (void)inputRank;
+    result->failureStage =
+        OVTRTEngineExecutionStageConfiguration;
+    return OVTRTStatusUnavailable;
+#endif
+}
+
+OVTRTStatus ovtrt_engine_output(
+    OVTRTEngine *engine,
+    uint32_t outputIndex,
+    OVTRTEngineOutputView *view
+) {
+    if (engine == nullptr || view == nullptr) {
+        return OVTRTStatusInvalidArgument;
+    }
+    *view = OVTRTEngineOutputView{};
+#if OVTRT_HAS_ENGINE_RUNTIME
+    if (
+        engine->submissionCount == 0 ||
+        engine->outputs == nullptr ||
+        outputIndex >= engine->outputCount
+    ) {
+        return OVTRTStatusResourceBusy;
+    }
+    ExecutionOutput const &output =
+        engine->outputs[outputIndex];
+    if (
+        output.deviceAddress == nullptr ||
+        output.dimensions.nbDims <= 0
+    ) {
+        return OVTRTStatusEngineExecutionFailure;
+    }
+    view->deviceAddress = output.deviceAddress;
+    view->byteCount = output.byteCount;
+    view->elementCount = output.elementCount;
+    view->elementType = elementType(output.dataType);
+    view->rank = output.dimensions.nbDims;
+    return OVTRTStatusSuccess;
+#else
+    (void)outputIndex;
+    return OVTRTStatusUnavailable;
+#endif
+}
+
+OVTRTStatus ovtrt_engine_output_dimension(
+    OVTRTEngine *engine,
+    uint32_t outputIndex,
+    uint32_t axis,
+    int64_t *dimension
+) {
+    if (engine == nullptr || dimension == nullptr) {
+        return OVTRTStatusInvalidArgument;
+    }
+#if OVTRT_HAS_ENGINE_RUNTIME
+    if (
+        engine->submissionCount == 0 ||
+        engine->outputs == nullptr ||
+        outputIndex >= engine->outputCount ||
+        axis >= static_cast<uint32_t>(
+            engine->outputs[outputIndex].dimensions.nbDims
+        )
+    ) {
+        return OVTRTStatusInvalidArgument;
+    }
+    *dimension =
+        engine->outputs[outputIndex].dimensions.d[axis];
+    return OVTRTStatusSuccess;
+#else
+    (void)outputIndex;
+    (void)axis;
+    return OVTRTStatusUnavailable;
+#endif
+}
+
+OVTRTStatus ovtrt_engine_release_execution(
+    OVTRTEngine *engine,
+    OVTRTEngineExecutionResult *result
+) {
+    if (engine == nullptr || result == nullptr) {
+        return OVTRTStatusInvalidArgument;
+    }
+    *result = OVTRTEngineExecutionResult{};
+#if OVTRT_HAS_ENGINE_RUNTIME
+    if (
+        engine->executionContext == nullptr &&
+        engine->outputs == nullptr &&
+        engine->executionStream == nullptr &&
+        engine->executionStart == nullptr &&
+        engine->executionStop == nullptr
+    ) {
+        result->failureStage =
+            OVTRTEngineExecutionStageConfiguration;
+        return OVTRTStatusResourceBusy;
+    }
+    return releaseExecutionResources(engine, result);
+#else
+    result->failureStage =
+        OVTRTEngineExecutionStageCleanup;
+    return OVTRTStatusUnavailable;
+#endif
+}
+
 void ovtrt_engine_destroy(OVTRTEngine *engine) {
     if (engine == nullptr) {
         return;
     }
 #if OVTRT_HAS_ENGINE_RUNTIME
+    if (
+        engine->executionContext != nullptr ||
+        engine->outputs != nullptr ||
+        engine->executionStream != nullptr ||
+        engine->executionStart != nullptr ||
+        engine->executionStop != nullptr
+    ) {
+        OVTRTEngineExecutionResult cleanup{};
+        releaseExecutionResources(engine, &cleanup);
+    }
     delete engine->engine;
     delete engine->runtime;
     dlclose(engine->cudaRuntimeLibrary);

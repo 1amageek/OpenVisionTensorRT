@@ -42,8 +42,35 @@ plan file
 ```
 
 Plan bytes are not copied into `Data`, `Array`, or another frame-sized Swift
-container. Model inference has a separate execution-context owner and is not
-reported as complete by successful engine loading.
+container.
+
+## TensorRT execution owner
+
+`TensorRTEngine.prepareExecution()` creates one TensorRT execution context,
+non-blocking CUDA stream, and timing-event pair. It derives maximum output
+capacities from the already validated semantic manifest, allocates each output
+once, and installs a fixed TensorRT output allocator. An actual runtime shape
+that exceeds its declared semantic bound fails with
+`outputCapacityExceeded`; it never falls back to an enqueue-time allocation.
+
+`TensorRTEngine.execute(_:)` borrows an existing CUDA input address and binds it
+directly. The C boundary synchronizes the completion event before publishing
+output views, so the returned device addresses are ready for a downstream CUDA
+consumer. A shared lease prevents another submission or shutdown while the
+output or any individual tensor view remains live.
+
+```text
+prepared CUDA input
+    -> scoped address borrow
+        -> TensorRT enqueueV3
+            -> completion event
+                -> stable engine-owned output addresses
+                    -> scoped output borrow
+```
+
+The detector path performs no tensor-sized input or output copy and no explicit
+per-frame device allocation. It still constructs small Swift report, shape,
+and lease values per submission; those are not frame-byte materializations.
 
 ## Runtime owner
 
@@ -180,6 +207,14 @@ advertised until its owner and fence contract is proven on the real camera.
 The deployment fault-injected one cleanup synchronization failure, verified
 that the opaque owner remained non-null, then retried destruction successfully.
 
+Three final-code detector runs each used 10 warm-up and 100 measured
+submissions. TensorRT GPU inference measured 2.533344–2.569632 ms p50 and
+2.574208–2.859296 ms p95. The two dynamic outputs retain 2,800 device bytes,
+reuse identical addresses, and require zero explicit per-frame device
+allocations. Combined with the measured RG10 preprocessing, the verified
+detector slice remained below 3.6 ms at the worst observed p95 before detector
+decoding.
+
 ## Shared-state review matrix
 
 | Logical state | Native storage/isolation | WASM storage/isolation | Embedded storage/isolation | Read/mutation | Shutdown/release |
@@ -188,6 +223,7 @@ that the opaque owner remained non-null, then retried destruction successfully.
 | Frame sequencing and active tensor lease | `RG10Preprocessor` actor | same actor contract | same actor contract | actor-isolated `process` and `shutdown`; a live output rejects overwrite | tensor release requires the consumer's completion fence; shutdown rejects a live lease |
 | Deferred failed cleanup | `Mutex<[Entry]>` registry | same mutex contract | same mutex contract | entries are removed under lock and cleanup is attempted outside the critical section | failed owners remain retained and are retried before a new preprocessor is created |
 | TensorRT engine owner | `TensorRTEngine` actor plus `Mutex<UInt?>` opaque-handle owner | same actor and mutex contract; runtime returns typed unavailable | same actor and mutex contract; runtime returns typed unavailable | actor serializes inspection and shutdown; the mutex protects exactly-once address consumption | engine precedes runtime, and both precede dynamic-library close |
+| TensorRT output lease | `Mutex<State>` holder and borrow counts | same mutex contract | same mutex contract | a synchronous scoped borrow prevents release; every output holder retains the same lease | another enqueue and shutdown reject an unreleased output; the last holder closes the lease |
 | CUDA work state | C owner, serialized by the Swift actor | unavailable typed boundary | unavailable typed boundary | submit/wait/destroy state machine | stream sync precedes source unregister, module unload, buffer/event/stream destruction |
 
 There is no `hasFeature(Embedded)` or `canImport(Synchronization)` branch in
@@ -205,5 +241,7 @@ It also deserialized the exact RTMDet and DWPose plans through the public Swift
 loader and validated every declared tensor and dynamic pose batch profile.
 Wrong-checksum and swapped-semantic-binding probes failed at their expected
 typed boundaries. Independent `trtexec` runs prove that both plans execute on
-this GPU; the reusable Swift execution context, semantic pose inference, and
-real camera lease remain separate milestones.
+this GPU. The public Swift path additionally sustained 110 detector submissions
+with stable output addresses and zero explicit per-frame device allocations.
+Detector decoding, region-affine pose input, semantic observation decoding, and
+the real camera lease remain separate milestones.

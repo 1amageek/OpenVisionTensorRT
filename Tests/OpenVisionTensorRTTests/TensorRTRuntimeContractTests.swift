@@ -463,6 +463,40 @@ struct TensorRTRuntimeContractTests {
         }
     }
 
+    @Test("TensorRT output lease remains active for every holder")
+    func tensorRTOutputLeaseHolders() throws {
+        let lease = TensorRTOutputLeaseState()
+        lease.retainHolder()
+        lease.retainHolder()
+
+        lease.releaseHolder()
+        #expect(!lease.isReleased)
+        try lease.withBorrow {}
+
+        lease.releaseHolder()
+        #expect(lease.isReleased)
+        #expect(throws: TensorRTInferenceOutputError.released) {
+            try lease.withBorrow {}
+        }
+    }
+
+    @Test("TensorRT output lease excludes release while borrowed")
+    func tensorRTOutputLeaseBorrow() throws {
+        let lease = TensorRTOutputLeaseState()
+        lease.retainHolder()
+
+        _ = try lease.withBorrow {
+            #expect(
+                throws: TensorRTInferenceOutputError.borrowInProgress
+            ) {
+                try lease.release()
+            }
+        }
+        try lease.release()
+        #expect(lease.isReleased)
+        lease.releaseHolder()
+    }
+
     private func makeRG10Configuration()
         throws -> RG10PreprocessingConfiguration
     {

@@ -14,6 +14,29 @@ enum OpenVisionTensorRTSwiftProbe {
 
     #if os(Linux)
     private static func run() async throws {
+            guard
+                CommandLine.arguments.count == 1 || CommandLine.arguments.count == 3
+            else {
+                throw SwiftProbeError.invalidArguments
+            }
+            let runsDetector = CommandLine.arguments.count == 3
+            let modelInput: VisionModelInputDescriptor?
+            if runsDetector {
+                let manifest =
+                    try RTMDetDWPoseBodyPoseManifest.manifest()
+                guard
+                    let stage = manifest.stage(
+                        identifiedBy:
+                            RTMDetDWPoseBodyPoseManifest
+                            .personDetectionStage
+                    )
+                else {
+                    throw SwiftProbeError.contractViolation
+                }
+                modelInput = stage.input
+            } else {
+                modelInput = nil
+            }
         let width = 1920
         let height = 1080
         let bytesPerRow = width * 2
@@ -100,11 +123,13 @@ enum OpenVisionTensorRTSwiftProbe {
             sourceHeight: height,
             sourceBytesPerRow: bytesPerRow,
             sourceByteCount: byteCount,
-            outputWidth: 256,
-            outputHeight: 256,
-            resizePolicy: .scaleFit,
-            tensorLayout: .channelsFirst,
-            channelOrder: .rgb,
+                outputWidth: modelInput?.width ?? 256,
+                outputHeight: modelInput?.height ?? 256,
+                resizePolicy: modelInput?.resizePolicy ?? .scaleFit,
+                tensorLayout:
+                    modelInput?.tensorLayout ?? .channelsFirst,
+                channelOrder:
+                    modelInput?.channelOrder ?? .rgb,
             blackLevels: RG10BayerValues(
                 red: 0,
                 greenOnRedRow: 0,
@@ -119,8 +144,15 @@ enum OpenVisionTensorRTSwiftProbe {
                 blue: 1
             ),
             colorMatrix: .identity,
-            normalization: .zeroToOne,
-            appliesSRGBTransfer: false
+                letterboxColor: RGBTriplet(
+                    red: modelInput?.letterboxColor.red ?? 0,
+                    green: modelInput?.letterboxColor.green ?? 0,
+                    blue: modelInput?.letterboxColor.blue ?? 0
+                ),
+                normalization:
+                    modelInput?.normalization ?? .zeroToOne,
+                appliesSRGBTransfer:
+                    modelInput?.transferFunction == .sRGB
         )
         let preprocessor = try RG10Preprocessor(
             configuration: configuration
@@ -128,10 +160,12 @@ enum OpenVisionTensorRTSwiftProbe {
         let output = try await preprocessor.process(input)
         guard
             output.report.satisfiesFrameContract,
-            output.tensor.width == 256,
-            output.tensor.height == 256,
+                output.tensor.width == (modelInput?.width ?? 256),
+                output.tensor.height == (modelInput?.height ?? 256),
             output.tensor.channelCount == 3,
-            output.tensor.elementCount == 256 * 256 * 3,
+                output.tensor.elementCount == (modelInput?.width ?? 256)
+                    * (modelInput?.height ?? 256)
+                    * 3,
             input.isReleased
         else {
             throw SwiftProbeError.contractViolation
@@ -139,11 +173,26 @@ enum OpenVisionTensorRTSwiftProbe {
         let addressIsNonzero = try output.tensor.withDeviceAddress {
             address,
             byteCount in
-            guard address != 0, byteCount == 256 * 256 * 3 * 4 else {
+                guard
+                    address != 0,
+                    byteCount == (modelInput?.width ?? 256)
+                        * (modelInput?.height ?? 256)
+                        * 3 * 4
+                else {
                 throw SwiftProbeError.contractViolation
             }
             return true
         }
+            let inferenceDescription: String
+            if runsDetector {
+                inferenceDescription = try await runDetector(
+                    input: output.tensor,
+                    path: CommandLine.arguments[1],
+                    checksum: CommandLine.arguments[2]
+                )
+            } else {
+                inferenceDescription = "\"notRequested\""
+            }
         try output.tensor.release()
         try await preprocessor.shutdown()
         print(
@@ -158,13 +207,168 @@ enum OpenVisionTensorRTSwiftProbe {
                 )
                 + ",\"kernelLaunches\":"
                 + String(output.report.kernelLaunchCount)
+                    + ",\"detectorInference\":"
+                    + inferenceDescription
                 + "}"
         )
     }
+
+        private static func runDetector(
+            input: RG10DeviceTensor,
+            path: String,
+            checksum: String
+        ) async throws -> String {
+            let manifest =
+                try RTMDetDWPoseBodyPoseManifest.manifest()
+            let artifact = try TensorRTEngineArtifactDescriptor(
+                semanticModel: manifest,
+                checksum: checksum,
+                tensorRTVersion: 101_602,
+                cudaRuntimeVersion: 13_020,
+                computeCapabilityMajor: 8,
+                computeCapabilityMinor: 7,
+                precision: .float16
+            )
+            let stage = try TensorRTStageEngineArtifactDescriptor(
+                artifact: artifact,
+                stageID:
+                    RTMDetDWPoseBodyPoseManifest
+                    .personDetectionStage,
+                inputTensorName: "input",
+                outputBindings: [
+                    try TensorRTEngineOutputBinding(
+                        semanticTensorID:
+                            RTMDetDWPoseBodyPoseManifest
+                            .detectionsTensor,
+                        engineTensorName: "dets"
+                    ),
+                    try TensorRTEngineOutputBinding(
+                        semanticTensorID:
+                            RTMDetDWPoseBodyPoseManifest
+                            .classesTensor,
+                        engineTensorName: "labels"
+                    ),
+                ]
+            )
+            let engine = try TensorRTEngine(
+                path: path,
+                artifact: stage
+            )
+            let preparation = try await engine.prepareExecution()
+            guard
+                preparation.persistentDeviceAllocationCount == 2,
+                preparation.explicitFrameDeviceAllocationCount == 0
+            else {
+                throw SwiftProbeError.contractViolation
+            }
+            let warmupIterationCount = 10
+            let measuredIterationCount = 100
+            let totalIterationCount =
+                warmupIterationCount + measuredIterationCount
+            var measurements: [Float] = []
+            measurements.reserveCapacity(measuredIterationCount)
+            var outputAddresses: [UInt]?
+            var detectionCount = 0
+            for iteration in 0..<totalIterationCount {
+                let inference = try await engine.execute(input)
+                guard
+                    inference.report.explicitFrameDeviceAllocationCount == 0,
+                    inference.report.submissionCount == UInt64(iteration + 1),
+                    inference.tensors.count == 2,
+                    inference.tensors[0].name == "dets",
+                    inference.tensors[0].shape.count == 3,
+                    inference.tensors[0].shape[0] == 1,
+                    inference.tensors[0].shape[2] == 5,
+                    inference.tensors[1].name == "labels",
+                    inference.tensors[1].shape.count == 2,
+                    inference.tensors[1].shape[0] == 1,
+                    inference.tensors[1].shape[1] == inference.tensors[0].shape[1]
+                else {
+                    throw SwiftProbeError.contractViolation
+                }
+                var currentAddresses: [UInt] = []
+                currentAddresses.reserveCapacity(
+                    inference.tensors.count
+                )
+                for tensor in inference.tensors {
+                    currentAddresses.append(
+                        try tensor.withDeviceAddress {
+                            address,
+                            _ in address
+                        }
+                    )
+                }
+                if let outputAddresses {
+                    guard currentAddresses == outputAddresses else {
+                        throw SwiftProbeError.contractViolation
+                    }
+                } else {
+                    outputAddresses = currentAddresses
+                }
+                detectionCount = inference.tensors[0].shape[1]
+                if iteration >= warmupIterationCount {
+                    measurements.append(
+                        inference.report.inferenceMilliseconds
+                    )
+                }
+                try inference.release()
+            }
+            guard
+                measurements.count == measuredIterationCount,
+                let outputAddresses,
+                outputAddresses.count == 2
+            else {
+                throw SwiftProbeError.contractViolation
+            }
+            let sortedMeasurements = measurements.sorted()
+            let p50 = percentile(
+                sortedMeasurements,
+                percentile: 0.50
+            )
+            let p95 = percentile(
+                sortedMeasurements,
+                percentile: 0.95
+            )
+            try await engine.shutdown()
+            return "{\"status\":\"passed\","
+                + "\"warmupIterations\":"
+                + String(warmupIterationCount)
+                + ",\"measuredIterations\":"
+                + String(measuredIterationCount)
+                + ",\"gpuP50Milliseconds\":"
+                + String(p50)
+                + ",\"gpuP95Milliseconds\":"
+                + String(p95)
+                + ",\"submissionCount\":"
+                + String(totalIterationCount)
+                + ",\"persistentBytes\":"
+                + String(
+                    preparation.persistentDeviceAllocationByteCount
+                )
+                + ",\"explicitFrameAllocations\":"
+                + String(preparation.explicitFrameDeviceAllocationCount)
+                + ",\"reusedOutputAddresses\":true"
+                + ",\"detectionCount\":"
+                + String(detectionCount)
+                + "}"
+        }
+
+        private static func percentile(
+            _ sortedValues: [Float],
+            percentile: Double
+        ) -> Float {
+            precondition(!sortedValues.isEmpty)
+            let scaledIndex =
+                percentile
+                * Double(sortedValues.count - 1)
+            let index = Int(scaledIndex.rounded(.up))
+            return sortedValues[index]
+        }
     #endif
 }
 
 private enum SwiftProbeError: Error {
+    case invalidArguments
     case allocationFailed
     case storageReleased
     case contractViolation

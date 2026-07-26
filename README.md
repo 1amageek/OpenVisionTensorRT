@@ -19,22 +19,28 @@ The current implementation owns:
 - semantic-model versus TensorRT-engine artifact metadata;
 - memory-mapped, SHA-256-verified TensorRT plan deserialization;
 - typed runtime, compute-capability, tensor-name, type, shape, and profile
-  compatibility validation.
+  compatibility validation;
+- reusable TensorRT execution contexts, CUDA streams, timing events, and
+  manifest-bounded output allocations;
+- completion-fenced detector output leases with stable device addresses and no
+  explicit per-frame device allocation.
 
-Matching detector and pose engines are now accepted by the public Swift loader
-on Jetson. Successful body or hand pose inference is not implemented until the
-reusable execution context, GPU decoding, and provider execution path are
-verified. The package does not report an alternate CPU provider.
+The public Swift path now executes the detector engine on Jetson. Successful
+body or hand pose inference is not implemented until detector decoding, GPU
+region-affine preprocessing, DWPose execution, SimCC decoding, and the provider
+execution path are verified. The package does not report an alternate CPU
+provider.
 
 ```text
 VisionImageInput (RG10)
     -> RG10Preprocessor
         -> one H2D + fused CUDA kernel
             -> RTMDet input tensor
-                -> TensorRT engine (deserialization verified)
+                -> TensorRT detector execution (verified)
+                    -> reusable device outputs (verified)
                     -> bounded person regions (next phase)
                     -> DWPose region-affine tensor (next phase)
-                        -> TensorRT execution/provider (next phase)
+                        -> DWPose execution/provider (next phase)
 ```
 
 The standalone transfer probe uses a 1920x1080 frame stored in a 16-bit raw
@@ -73,6 +79,12 @@ Negative Jetson probes also proved that a wrong digest fails at the typed
 `checksum` stage and swapped semantic output bindings fail with a typed element
 type incompatibility. Neither condition falls back to another engine.
 
+The final detector execution path was measured three times with 10 warm-up and
+100 measured submissions. GPU inference p50 was 2.533344–2.569632 ms and p95
+was 2.574208–2.859296 ms. The two dynamic detector outputs retain 2,800 device
+bytes, reuse identical device addresses, and perform zero explicit per-frame
+device allocations after preparation.
+
 Build and run the exact runtime boundary on a configured Wendy Jetson:
 
 ```bash
@@ -81,6 +93,6 @@ wendy run \
   --device 169.254.58.23 \
   --prefix Deployment/Wendy \
   --builder apple-container \
-  --restart-on-failure \
+  --no-restart \
   --yes
 ```

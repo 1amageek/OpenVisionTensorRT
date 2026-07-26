@@ -14,6 +14,7 @@ public enum TensorRTEngineCompatibilityError:
         actualMinor: Int32
     )
     case checksumNotVerified
+    case missingStage(VisionModelStageID)
     case tensorCount(expected: Int, actual: Int)
     case missingTensor(String)
     case unexpectedTensor(String)

@@ -7,6 +7,8 @@ public actor TensorRTEngine {
     public let tensors: [TensorRTEngineTensorDescriptor]
 
     private let owner: TensorRTEngineHandleOwner
+    private var executionPrepared: Bool
+    private var activeOutputLease: TensorRTOutputLeaseState?
 
     public init(
         path: String,
@@ -54,6 +56,8 @@ public actor TensorRTEngine {
             loadReport = report
             tensors = inspected
             owner = TensorRTEngineHandleOwner(handle: handle)
+            executionPrepared = false
+            activeOutputLease = nil
         } catch {
             ovtrt_engine_destroy(handle)
             throw error
@@ -64,11 +68,457 @@ public actor TensorRTEngine {
         owner.isActive
     }
 
+    public var isExecutionPrepared: Bool {
+        executionPrepared
+    }
+
+    public func prepareExecution()
+        throws(TensorRTEngineError)
+        -> TensorRTEngineExecutionReport
+    {
+        guard owner.isActive else {
+            throw .alreadyShutDown
+        }
+        guard !executionPrepared else {
+            throw .executionAlreadyPrepared
+        }
+        let outputCapacityByteCounts =
+            try maximumOutputCapacityByteCounts()
+        guard
+            let rawOutputCapacityCount =
+                UInt32(exactly: outputCapacityByteCounts.count),
+            rawOutputCapacityCount > 0
+        else {
+            throw .invalidOutputCount(
+                outputCapacityByteCounts.count
+            )
+        }
+        var rawReport = OVTRTEngineExecutionResult()
+        let status =
+            outputCapacityByteCounts
+            .withUnsafeBufferPointer { capacities in
+                guard let baseAddress = capacities.baseAddress else {
+                    return TensorRTRuntimeStatus.invalidArgument
+                }
+                return owner.withHandle { handle in
+                    TensorRTRuntimeStatus(
+                        ovtrt_engine_prepare_execution(
+                            handle,
+                            baseAddress,
+                            rawOutputCapacityCount,
+                            &rawReport
+                        )
+                    )
+                } ?? .resourceBusy
+            }
+        let report = TensorRTEngineExecutionReport(rawReport)
+        guard status == .available else {
+            if report.failureStage == .cleanup {
+                executionPrepared = true
+                throw .executionCleanupFailed(
+                    status: status,
+                    report: report
+                )
+            }
+            throw .executionPreparationFailed(
+                status: status,
+                report: report
+            )
+        }
+        executionPrepared = true
+        guard
+            report.outputTensorCount == artifact.outputBindings.count,
+            report.persistentDeviceAllocationCount == report.outputTensorCount,
+            report.persistentDeviceAllocationByteCount > 0,
+            report.explicitFrameDeviceAllocationCount == 0
+        else {
+            var rawCleanupReport = OVTRTEngineExecutionResult()
+            let cleanupStatus = owner.withHandle { handle in
+                TensorRTRuntimeStatus(
+                    ovtrt_engine_release_execution(
+                        handle,
+                        &rawCleanupReport
+                    )
+                )
+            } ?? .resourceBusy
+            guard cleanupStatus == .available else {
+                throw .executionCleanupFailed(
+                    status: cleanupStatus,
+                    report:
+                        TensorRTEngineExecutionReport(
+                            rawCleanupReport
+                        )
+                )
+            }
+            executionPrepared = false
+            throw .executionPreparationFailed(
+                status: .engineExecutionSetupFailure,
+                report: report
+            )
+        }
+        return report
+    }
+
+    public func execute(
+        _ input: any TensorRTDeviceInput,
+        batchSize: Int = 1
+    ) throws(TensorRTEngineError) -> TensorRTInferenceOutput {
+        guard owner.isActive else {
+            throw .alreadyShutDown
+        }
+        guard executionPrepared else {
+            throw .executionNotPrepared
+        }
+        if let activeOutputLease {
+            guard activeOutputLease.isReleased else {
+                throw .outputInUse
+            }
+            self.activeOutputLease = nil
+        }
+        let inputShape = try expectedInputShape(
+            batchSize: batchSize
+        )
+        let declaredInputByteCount = input.byteCount
+        guard
+            declaredInputByteCount > 0,
+            let rawInputByteCount =
+                UInt64(exactly: declaredInputByteCount)
+        else {
+            throw .invalidInput(
+                .invalidByteCount(declaredInputByteCount)
+            )
+        }
+        var rawReport = OVTRTEngineExecutionResult()
+        var executionStatus: TensorRTRuntimeStatus?
+        var inputFailure: TensorRTDeviceInputError?
+        do {
+            try input.withTensorRTDeviceAddress {
+                address,
+                byteCount in
+                guard address != 0 else {
+                    inputFailure = .inaccessible
+                    return
+                }
+                guard byteCount == declaredInputByteCount else {
+                    inputFailure = .byteCountMismatch(
+                        declared: declaredInputByteCount,
+                        borrowed: byteCount
+                    )
+                    return
+                }
+                executionStatus =
+                    inputShape.withUnsafeBufferPointer { dimensions in
+                        guard
+                            let baseAddress = dimensions.baseAddress,
+                            let rawRank =
+                                UInt32(exactly: dimensions.count)
+                        else {
+                            return .invalidArgument
+                        }
+                        return owner.withHandle { handle in
+                            TensorRTRuntimeStatus(
+                                ovtrt_engine_execute(
+                                    handle,
+                                    UnsafeRawPointer(
+                                        bitPattern: address
+                                    ),
+                                    rawInputByteCount,
+                                    baseAddress,
+                                    rawRank,
+                                    &rawReport
+                                )
+                            )
+                        } ?? .resourceBusy
+                    }
+            }
+        } catch let error {
+            throw .invalidInput(error)
+        }
+        if let inputFailure {
+            throw .invalidInput(inputFailure)
+        }
+        guard let status = executionStatus else {
+            throw .invalidInput(.inaccessible)
+        }
+        let report = TensorRTEngineExecutionReport(rawReport)
+        guard status == .available else {
+            throw .executionFailed(
+                status: status,
+                report: report
+            )
+        }
+        guard
+            report.batchSize == batchSize,
+            report.inputByteCount == rawInputByteCount,
+            report.outputTensorCount == artifact.outputBindings.count,
+            report.submissionCount > 0,
+            report.explicitFrameDeviceAllocationCount == 0,
+            report.inferenceMilliseconds.isFinite,
+            report.inferenceMilliseconds >= 0
+        else {
+            throw .executionFailed(
+                status: .engineExecutionFailure,
+                report: report
+            )
+        }
+
+        let lease = TensorRTOutputLeaseState()
+        let outputDescriptors = tensors.filter {
+            $0.ioMode == .output
+        }
+        var outputs: [TensorRTDeviceOutputTensor] = []
+        outputs.reserveCapacity(outputDescriptors.count)
+        for index in outputDescriptors.indices {
+            outputs.append(
+                try inspectedOutput(
+                    index: index,
+                    descriptor: outputDescriptors[index],
+                    lease: lease
+                )
+            )
+        }
+        activeOutputLease = lease
+        return TensorRTInferenceOutput(
+            tensors: outputs,
+            report: report,
+            lease: lease
+        )
+    }
+
+    private func maximumOutputCapacityByteCounts()
+        throws(TensorRTEngineError) -> [UInt64]
+    {
+        guard
+            let stage = artifact.artifact.semanticModel
+                .stage(identifiedBy: artifact.stageID)
+        else {
+            throw .incompatibleArtifact(
+                .missingStage(artifact.stageID)
+            )
+        }
+        let outputDescriptors = tensors.filter {
+            $0.ioMode == .output
+        }
+        var capacities: [UInt64] = []
+        capacities.reserveCapacity(outputDescriptors.count)
+        for descriptor in outputDescriptors {
+            guard
+                let binding = artifact.outputBindings.first(
+                    where: {
+                        $0.engineTensorName == descriptor.name
+                    }
+                ),
+                let semanticOutput = stage.output(
+                    identifiedBy: binding.semanticTensorID
+                )
+            else {
+                throw .incompatibleArtifact(
+                    .missingTensor(descriptor.name)
+                )
+            }
+            var elementCount: UInt64 = 1
+            for dimension in semanticOutput.shape {
+                let maximum: Int
+                switch dimension {
+                case .fixed(let value):
+                    maximum = value
+                case .batch(let value):
+                    maximum = value
+                case .variable(let value):
+                    maximum = value
+                }
+                guard
+                    let converted = UInt64(exactly: maximum)
+                else {
+                    throw .invalidOutputCapacity(descriptor.name)
+                }
+                let product =
+                    elementCount
+                    .multipliedReportingOverflow(by: converted)
+                guard !product.overflow else {
+                    throw .invalidOutputCapacity(descriptor.name)
+                }
+                elementCount = product.partialValue
+            }
+            guard
+                let elementByteCount = Self.elementByteCount(
+                    semanticOutput.elementType
+                )
+            else {
+                throw .invalidOutputCapacity(descriptor.name)
+            }
+            let byteCount =
+                elementCount
+                .multipliedReportingOverflow(
+                    by: elementByteCount
+                )
+            guard !byteCount.overflow, byteCount.partialValue > 0 else {
+                throw .invalidOutputCapacity(descriptor.name)
+            }
+            capacities.append(byteCount.partialValue)
+        }
+        return capacities
+    }
+
     public func shutdown() throws(TensorRTEngineError) {
+        if let activeOutputLease {
+            guard activeOutputLease.isReleased else {
+                throw .outputInUse
+            }
+            self.activeOutputLease = nil
+        }
+        if executionPrepared {
+            var rawReport = OVTRTEngineExecutionResult()
+            let status =
+                owner.withHandle { handle in
+                    TensorRTRuntimeStatus(
+                        ovtrt_engine_release_execution(
+                            handle,
+                            &rawReport
+                        )
+                    )
+                } ?? .resourceBusy
+            let report =
+                TensorRTEngineExecutionReport(rawReport)
+            guard status == .available else {
+                throw .executionCleanupFailed(
+                    status: status,
+                    report: report
+                )
+            }
+            executionPrepared = false
+        }
         guard let handle = owner.consume() else {
             throw .alreadyShutDown
         }
         ovtrt_engine_destroy(handle)
+    }
+
+    private func expectedInputShape(
+        batchSize: Int
+    ) throws(TensorRTEngineError) -> [Int64] {
+        guard
+            let stage = artifact.artifact.semanticModel
+                .stage(identifiedBy: artifact.stageID)
+        else {
+            throw .incompatibleArtifact(
+                .missingStage(artifact.stageID)
+            )
+        }
+        let input = stage.input
+        let maximumBatchSize: Int
+        switch input.source {
+        case .image:
+            maximumBatchSize = 1
+        case .regions(_, _, _, let maximumCount, _):
+            maximumBatchSize = maximumCount
+        }
+        guard
+            batchSize > 0,
+            batchSize <= maximumBatchSize
+        else {
+            throw .invalidBatchSize(batchSize)
+        }
+        let values: [Int]
+        switch input.tensorLayout {
+        case .channelsFirst:
+            values = [
+                batchSize,
+                3,
+                input.height,
+                input.width,
+            ]
+        case .channelsLast:
+            values = [
+                batchSize,
+                input.height,
+                input.width,
+                3,
+            ]
+        }
+        var shape: [Int64] = []
+        shape.reserveCapacity(values.count)
+        for value in values {
+            guard let dimension = Int64(exactly: value) else {
+                throw .invalidBatchSize(batchSize)
+            }
+            shape.append(dimension)
+        }
+        return shape
+    }
+
+    private func inspectedOutput(
+        index: Int,
+        descriptor: TensorRTEngineTensorDescriptor,
+        lease: TensorRTOutputLeaseState
+    ) throws(TensorRTEngineError)
+        -> TensorRTDeviceOutputTensor
+    {
+        var rawView = OVTRTEngineOutputView()
+        let status =
+            owner.withHandle { handle in
+                TensorRTRuntimeStatus(
+                    ovtrt_engine_output(
+                        handle,
+                        UInt32(index),
+                        &rawView
+                    )
+                )
+            } ?? .resourceBusy
+        guard
+            status == .available,
+            let address = rawView.deviceAddress,
+            let byteCount = Int(exactly: rawView.byteCount),
+            let elementCount =
+                Int(exactly: rawView.elementCount),
+            rawView.rank > 0,
+            let rank = Int(exactly: rawView.rank),
+            let actualElementType =
+                Self.elementType(rawView.elementType),
+            actualElementType == descriptor.elementType
+        else {
+            throw .outputInspectionFailed(
+                status: status,
+                outputIndex: index
+            )
+        }
+        var shape: [Int] = []
+        shape.reserveCapacity(rank)
+        for axis in 0..<rank {
+            var rawDimension: Int64 = 0
+            let dimensionStatus =
+                owner.withHandle { handle in
+                    TensorRTRuntimeStatus(
+                        ovtrt_engine_output_dimension(
+                            handle,
+                            UInt32(index),
+                            UInt32(axis),
+                            &rawDimension
+                        )
+                    )
+                } ?? .resourceBusy
+            guard
+                dimensionStatus == .available,
+                let dimension = Int(exactly: rawDimension),
+                dimension >= 0
+            else {
+                throw .outputInspectionFailed(
+                    status: dimensionStatus,
+                    outputIndex: index
+                )
+            }
+            shape.append(dimension)
+        }
+        return TensorRTDeviceOutputTensor(
+            name: descriptor.name,
+            address: UInt(bitPattern: address),
+            byteCount: byteCount,
+            elementCount: elementCount,
+            shape: shape,
+            elementType: actualElementType,
+            owner: owner,
+            lease: lease
+        )
     }
 
     private static func inspectedTensors(
@@ -145,9 +595,11 @@ public actor TensorRTEngine {
                 tensorIndex: index
             )
         }
-        guard let name = nameBytes.withUnsafeBufferPointer({ buffer in
+        guard
+            let name = nameBytes.withUnsafeBufferPointer({ buffer in
             buffer.baseAddress.map { String(cString: $0) }
-        }) else {
+            })
+        else {
             throw .inspectionFailed(
                 status: .engineArtifactFailure,
                 tensorIndex: index
@@ -282,6 +734,21 @@ public actor TensorRTEngine {
         }
     }
 
+    private static func elementByteCount(
+        _ elementType: VisionModelInputDescriptor.ElementType
+    ) -> UInt64? {
+        switch elementType {
+        case .float32, .int32:
+            4
+        case .float16:
+            2
+        case .int8:
+            1
+        case .int64:
+            8
+        }
+    }
+
     private static func validateRuntime(
         report: TensorRTEngineLoadReport,
         artifact: TensorRTEngineArtifactDescriptor
@@ -300,8 +767,7 @@ public actor TensorRTEngine {
             )
         }
         guard
-            report.cudaRuntimeVersion ==
-                artifact.cudaRuntimeVersion
+            report.cudaRuntimeVersion == artifact.cudaRuntimeVersion
         else {
             throw .incompatibleArtifact(
                 .cudaRuntimeVersion(
@@ -311,10 +777,8 @@ public actor TensorRTEngine {
             )
         }
         guard
-            report.computeCapabilityMajor ==
-                artifact.computeCapabilityMajor,
-            report.computeCapabilityMinor ==
-                artifact.computeCapabilityMinor
+            report.computeCapabilityMajor == artifact.computeCapabilityMajor,
+            report.computeCapabilityMinor == artifact.computeCapabilityMinor
         else {
             throw .incompatibleArtifact(
                 .computeCapability(
@@ -354,8 +818,8 @@ public actor TensorRTEngine {
             )
         }
         let expectedNames = Set(
-            [artifact.inputTensorName] +
-            artifact.outputBindings.map {
+            [artifact.inputTensorName]
+                + artifact.outputBindings.map {
                 $0.engineTensorName
             }
         )
@@ -409,22 +873,21 @@ public actor TensorRTEngine {
         case .regions(_, _, _, let maximumCount, _):
             batch = .batch(maximum: maximumCount)
         }
-        let expectedShape:
-            [VisionModelTensorDescriptor.Dimension]
+        let expectedShape: [VisionModelTensorDescriptor.Dimension]
         switch stage.input.tensorLayout {
         case .channelsFirst:
             expectedShape = [
                 batch,
                 .fixed(3),
                 .fixed(stage.input.height),
-                .fixed(stage.input.width)
+                .fixed(stage.input.width),
             ]
         case .channelsLast:
             expectedShape = [
                 batch,
                 .fixed(stage.input.height),
                 .fixed(stage.input.width),
-                .fixed(3)
+                .fixed(3),
             ]
         }
         try validateTensor(
