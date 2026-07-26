@@ -53,8 +53,38 @@ After the copy, all work uses provider-owned device allocations.
 The kernel accepts the eight OpenVision/EXIF orientations, `scaleFill`,
 `scaleFit`, and `centerCrop`, NCHW and NHWC layouts, RGB and BGR ordering,
 per-Bayer-site black levels and gains, a 3x3 color transform, optional sRGB
-transfer, and affine normalization. Unsupported hosts return typed unavailable
-evidence; no CPU fallback is selected.
+transfer, and independent red/green/blue affine normalization. Unsupported
+hosts return typed unavailable evidence; no CPU fallback is selected.
+
+`regionAffine` is intentionally rejected by this full-frame preprocessor. The
+DWPose stage requires a detector-derived, aspect-preserving affine ROI and is
+not equivalent to any full-frame resize mode. Its dedicated GPU implementation
+belongs to the TensorRT execution milestone.
+
+## Semantic model manifest
+
+The bring-up manifest fixes two independently verifiable semantic stages:
+
+```text
+RTMDet-nano
+  320x320 / BGR / NCHW / ImageNet channel normalization
+    -> at most four person regions above 0.3 confidence
+      -> 1.25x region-affine crop
+        -> DWPose-m
+          256x192 / RGB / NCHW / 133 COCO-WholeBody joints
+            -> SimCC X[batch,133,384] + Y[batch,133,512]
+```
+
+Both checkpoint source URLs, source revisions, exact SHA-256 digests, training
+datasets, and citations are part of the manifest. The output mapping covers all
+OpenVision body joints and both complete hand vocabularies. Neck and root are
+derived from shoulder and hip midpoints using the minimum input confidence.
+
+The manifest is model meaning, not an engine. TensorRT plan checksums, TensorRT
+and CUDA versions, compute capability, precision, memory workspace, and
+execution-context ownership remain in provider artifact contracts. The
+ceiling-camera domain and dataset-license review are explicit acceptance gates,
+not inferred from successful checkpoint conversion.
 
 Direct import will be advertised only after a DMA-BUF or external-memory path
 is proven on the actual Jetson camera storage.
@@ -100,16 +130,17 @@ allocation count, p50/p95 latency, host/device resident memory, power, and
 thermal state; runtime creation alone does not satisfy this budget.
 
 The 2026-07-26 Jetson probe measured the representative 4,147,200-byte source
-at 0.169664 ms p50 and 0.170720 ms p95, corresponding to 24.444 GB/s and
-24.292 GB/s. All 110 H2D submissions used one copy each, no frame-sized
+at 0.170016 ms p50 and 0.171136 ms p95, corresponding to 24.393 GB/s and
+24.233 GB/s. All 110 H2D submissions used one copy each, no frame-sized
 allocation occurred after warm-up, and address preservation, completion-event
 ownership, and byte verification passed.
 
 The fused 1920x1080 RG10 to 256x256 NCHW pipeline, including the one H2D copy,
-measured 0.657248 ms p50 and 0.675616 ms p95 on the same Jetson. The complete
-public preprocessing API path measured 0.667455 ms p50 and 0.686560 ms p95.
-Twenty-four orientation/resize differential cases plus one independent RGGB
-golden fixture matched the CPU reference with a maximum absolute difference of
+measured 0.653184 ms p50 and 0.696288 ms p95 on the same Jetson. The complete
+public preprocessing API path measured 0.663581 ms p50 and 0.706149 ms p95.
+Twenty-four orientation/resize differential cases, including independent
+red/green/blue normalization coefficients, plus one independent RGGB golden
+fixture matched the CPU reference with a maximum absolute difference of
 0.00000012.
 
 The Swift deployment also passed the public path from `VisionImageInput`

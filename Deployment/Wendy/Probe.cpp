@@ -382,12 +382,12 @@ std::vector<float> referenceOutput(
                 }
             }
             float channels[] = {
-                color.red * configuration.normalizationScale +
-                    configuration.normalizationBias,
-                color.green * configuration.normalizationScale +
-                    configuration.normalizationBias,
-                color.blue * configuration.normalizationScale +
-                    configuration.normalizationBias
+                color.red * configuration.normalizationScaleR +
+                    configuration.normalizationBiasR,
+                color.green * configuration.normalizationScaleG +
+                    configuration.normalizationBiasG,
+                color.blue * configuration.normalizationScaleB +
+                    configuration.normalizationBiasB
             };
             if (
                 configuration.channelOrder ==
@@ -418,41 +418,32 @@ OVTRTRG10PreprocessingConfiguration configuration(
     uint32_t outputHeight,
     OVTRTRG10ResizePolicy resizePolicy
 ) {
-    return OVTRTRG10PreprocessingConfiguration{
-        sourceWidth,
-        sourceHeight,
-        sourceWidth * 2U,
-        static_cast<uint64_t>(sourceWidth) * sourceHeight * 2ULL,
-        outputWidth,
-        outputHeight,
-        resizePolicy,
-        OVTRTTensorLayoutNCHW,
-        OVTRTTensorChannelOrderRGB,
-        0.0F,
-        0.0F,
-        0.0F,
-        0.0F,
-        1023.0F,
-        1.0F,
-        1.0F,
-        1.0F,
-        1.0F,
-        1.0F,
-        0.0F,
-        0.0F,
-        0.0F,
-        1.0F,
-        0.0F,
-        0.0F,
-        0.0F,
-        1.0F,
-        0.125F,
-        0.25F,
-        0.5F,
-        1.0F,
-        0.0F,
-        0
-    };
+    OVTRTRG10PreprocessingConfiguration value{};
+    value.sourceWidth = sourceWidth;
+    value.sourceHeight = sourceHeight;
+    value.sourceBytesPerRow = sourceWidth * 2U;
+    value.sourceByteCount =
+        static_cast<uint64_t>(sourceWidth) * sourceHeight * 2ULL;
+    value.outputWidth = outputWidth;
+    value.outputHeight = outputHeight;
+    value.resizePolicy = resizePolicy;
+    value.tensorLayout = OVTRTTensorLayoutNCHW;
+    value.channelOrder = OVTRTTensorChannelOrderRGB;
+    value.whiteLevel = 1023.0F;
+    value.gainR = 1.0F;
+    value.gainGreenR = 1.0F;
+    value.gainGreenB = 1.0F;
+    value.gainB = 1.0F;
+    value.colorMatrix00 = 1.0F;
+    value.colorMatrix11 = 1.0F;
+    value.colorMatrix22 = 1.0F;
+    value.letterboxR = 0.125F;
+    value.letterboxG = 0.25F;
+    value.letterboxB = 0.5F;
+    value.normalizationScaleR = 1.0F;
+    value.normalizationScaleG = 1.0F;
+    value.normalizationScaleB = 1.0F;
+    return value;
 }
 
 std::vector<uint8_t> fixture(
@@ -804,8 +795,12 @@ int main() {
                 OVTRTTensorLayoutNHWC;
             testConfiguration.channelOrder =
                 OVTRTTensorChannelOrderBGR;
-            testConfiguration.normalizationScale = 2.0F;
-            testConfiguration.normalizationBias = -1.0F;
+            testConfiguration.normalizationScaleR = 2.0F;
+            testConfiguration.normalizationScaleG = 3.0F;
+            testConfiguration.normalizationScaleB = 4.0F;
+            testConfiguration.normalizationBiasR = -1.0F;
+            testConfiguration.normalizationBiasG = -0.5F;
+            testConfiguration.normalizationBiasB = 0.25F;
         }
         std::vector<uint8_t> source = fixture(testConfiguration);
         OVTRTRG10Preprocessor *preprocessor = nullptr;

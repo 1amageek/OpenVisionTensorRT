@@ -264,15 +264,6 @@ public actor RG10Preprocessor {
     private static func rawConfiguration(
         _ value: RG10PreprocessingConfiguration
     ) -> OVTRTRG10PreprocessingConfiguration {
-        let normalization: (Float, Float)
-        switch value.normalization {
-        case .zeroToOne:
-            normalization = (1, 0)
-        case .negativeOneToOne:
-            normalization = (2, -1)
-        case .affine(let scale, let bias):
-            normalization = (scale, bias)
-        }
         return OVTRTRG10PreprocessingConfiguration(
             sourceWidth: UInt32(value.sourceWidth),
             sourceHeight: UInt32(value.sourceHeight),
@@ -280,7 +271,9 @@ public actor RG10Preprocessor {
             sourceByteCount: UInt64(value.sourceByteCount),
             outputWidth: UInt32(value.outputWidth),
             outputHeight: UInt32(value.outputHeight),
-            resizePolicy: rawResizePolicy(value.resizePolicy),
+            resizePolicy: rawResizePolicy(
+                value.supportedResizePolicy
+            ),
             tensorLayout:
                 value.tensorLayout == .channelsFirst
                 ? OVTRTTensorLayoutNCHW
@@ -310,14 +303,25 @@ public actor RG10Preprocessor {
             letterboxR: value.letterboxColor.red,
             letterboxG: value.letterboxColor.green,
             letterboxB: value.letterboxColor.blue,
-            normalizationScale: normalization.0,
-            normalizationBias: normalization.1,
+            normalizationScaleR:
+                value.normalization.scale.red,
+            normalizationScaleG:
+                value.normalization.scale.green,
+            normalizationScaleB:
+                value.normalization.scale.blue,
+            normalizationBiasR:
+                value.normalization.bias.red,
+            normalizationBiasG:
+                value.normalization.bias.green,
+            normalizationBiasB:
+                value.normalization.bias.blue,
             applySRGBTransfer: value.appliesSRGBTransfer ? 1 : 0
         )
     }
 
     private static func rawResizePolicy(
-        _ value: VisionModelInputDescriptor.ResizePolicy
+        _ value:
+            RG10PreprocessingConfiguration.SupportedResizePolicy
     ) -> OVTRTRG10ResizePolicy {
         switch value {
         case .scaleFill:

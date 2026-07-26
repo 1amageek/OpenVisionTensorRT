@@ -15,17 +15,22 @@ The current implementation owns:
 - typed calibration, orientation, resize, normalization, and tensor layout;
 - a completion-fenced device tensor lease exposed through a scoped Swift API;
 - retryable cleanup that retains CUDA owners after destruction failure;
+- a validated RTMDet-nano plus DWPose-m semantic model manifest;
 - semantic-model versus TensorRT-engine artifact metadata.
 
-Successful body or hand pose inference is not implemented until a semantic
-model is selected. The package does not report an alternate CPU provider.
+The semantic model has been selected for bring-up, but successful body or hand
+pose inference is not implemented until matching TensorRT engines and the
+provider execution path are verified. The package does not report an alternate
+CPU provider.
 
 ```text
 VisionImageInput (RG10)
     -> RG10Preprocessor
         -> one H2D + fused CUDA kernel
-            -> reusable device tensor
-                -> TensorRT provider (next phase)
+            -> RTMDet input tensor
+                -> bounded person regions
+                    -> DWPose region-affine tensor (next phase)
+                        -> TensorRT provider (next phase)
 ```
 
 The standalone transfer probe uses a 1920x1080 frame stored in a 16-bit raw
@@ -43,8 +48,8 @@ VisionImageInput scoped bytes
 ```
 
 On Jetson Orin Nano, the fused 1920x1080 RG10 to 256x256 tensor path measured
-0.657248 ms p50 and 0.675616 ms p95 including the one H2D copy. The complete
-public preprocessing API path measured 0.667455 ms p50 and 0.686560 ms p95.
+0.653184 ms p50 and 0.696288 ms p95 including the one H2D copy. The complete
+public preprocessing API path measured 0.663581 ms p50 and 0.706149 ms p95.
 Twenty-four differential cases covering all orientations and resize policies,
 plus an independent RGGB golden fixture, matched the CPU reference within
 0.00000012. The public Swift Jetson path also verified a nonzero device

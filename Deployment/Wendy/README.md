@@ -37,8 +37,9 @@ failures exit nonzero.
 
 The RG10 contract compares CUDA output against an independent CPU reference for
 all eight orientations under all three resize policies. It also covers Bayer
-black/gain calibration, a 3x3 color matrix, sRGB transfer, affine
-normalization, NCHW/NHWC, RGB/BGR, and an independent RGGB golden fixture. The
+black/gain calibration, a 3x3 color matrix, sRGB transfer, independent
+red/green/blue affine normalization, NCHW/NHWC, RGB/BGR, and an independent
+RGGB golden fixture. The
 performance path converts one 1920x1080 SRGGB10 frame into a 256x256 tensor
 with one H2D copy, one fused kernel, and no explicit frame-sized device
 allocation after preparation. A second executable verifies the same operation
@@ -47,7 +48,7 @@ through the public Swift `VisionImageInput` and device-tensor lease API.
 Verified on WendyOS 0.18.1 / JetPack 7.2:
 
 ```json
-{"cProbe":{"status":"available","tensorRTVersion":101602,"cudaRuntimeVersion":13020,"cudaDriverVersion":13020,"cudaDeviceCount":1,"runtimeLifecycle":"passed","transfer":{"p50Milliseconds":0.169664,"p95Milliseconds":0.170720,"contract":"passed"},"rg10Preprocessing":{"verifiedCases":25,"maximumAbsoluteDifference":0.00000012,"fullFrameHostToDeviceCopiesPerFrame":1,"kernelLaunchesPerFrame":1,"explicitFrameSizedDeviceAllocationsAfterPreparation":0,"p50Milliseconds":0.657248,"p95Milliseconds":0.675616,"endToEndP50Milliseconds":0.667455,"endToEndP95Milliseconds":0.686560,"contract":"passed"},"retryableCleanup":"passed"},"swiftProbe":{"status":"available","swiftPublicPath":"passed","deviceAddressNonzero":true,"inputReleased":true,"h2dCopies":1,"kernelLaunches":1}}
+{"cProbe":{"status":"available","tensorRTVersion":101602,"cudaRuntimeVersion":13020,"cudaDriverVersion":13020,"cudaDeviceCount":1,"runtimeLifecycle":"passed","transfer":{"p50Milliseconds":0.170016,"p95Milliseconds":0.171136,"contract":"passed"},"rg10Preprocessing":{"verifiedCases":25,"maximumAbsoluteDifference":0.00000012,"fullFrameHostToDeviceCopiesPerFrame":1,"kernelLaunchesPerFrame":1,"explicitFrameSizedDeviceAllocationsAfterPreparation":0,"p50Milliseconds":0.653184,"p95Milliseconds":0.696288,"endToEndP50Milliseconds":0.663581,"endToEndP95Milliseconds":0.706149,"contract":"passed"},"retryableCleanup":"passed"},"swiftProbe":{"status":"available","swiftPublicPath":"passed","deviceAddressNonzero":true,"inputReleased":true,"h2dCopies":1,"kernelLaunches":1}}
 ```
 
 This proves the runtime boundary, a representative camera-sized host-to-GPU

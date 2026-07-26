@@ -1,7 +1,7 @@
 import OpenVision
 
 public struct TensorRTEngineArtifactDescriptor: Sendable, Hashable {
-    public let semanticModel: VisionModelDescriptor
+    public let semanticModel: VisionModelManifest
     public let checksum: String
     public let tensorRTVersion: Int32
     public let cudaRuntimeVersion: Int32
@@ -10,7 +10,7 @@ public struct TensorRTEngineArtifactDescriptor: Sendable, Hashable {
     public let precision: TensorRTPrecision
 
     public init(
-        semanticModel: VisionModelDescriptor,
+        semanticModel: VisionModelManifest,
         checksum: String,
         tensorRTVersion: Int32,
         cudaRuntimeVersion: Int32,
@@ -20,6 +20,15 @@ public struct TensorRTEngineArtifactDescriptor: Sendable, Hashable {
     ) throws(TensorRTEngineArtifactError) {
         guard !checksum.isEmpty else {
             throw .emptyChecksum
+        }
+        guard
+            checksum.utf8.count == 64,
+            checksum.utf8.allSatisfy({
+                (48 ... 57).contains($0) ||
+                (97 ... 102).contains($0)
+            })
+        else {
+            throw .invalidChecksum(checksum)
         }
         guard tensorRTVersion > 0 else {
             throw .invalidTensorRTVersion(tensorRTVersion)
@@ -35,6 +44,20 @@ public struct TensorRTEngineArtifactDescriptor: Sendable, Hashable {
                 major: computeCapabilityMajor,
                 minor: computeCapabilityMinor
             )
+        }
+        let semanticPrecision: VisionModelPrecision
+        switch precision {
+        case .float32:
+            semanticPrecision = .float32
+        case .float16:
+            semanticPrecision = .float16
+        case .int8:
+            semanticPrecision = .int8
+        }
+        guard semanticModel.quality.permittedPrecisions.contains(
+            semanticPrecision
+        ) else {
+            throw .unsupportedPrecision(precision)
         }
 
         self.semanticModel = semanticModel

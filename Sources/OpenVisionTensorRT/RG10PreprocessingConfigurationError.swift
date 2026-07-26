@@ -1,3 +1,5 @@
+import OpenVision
+
 public enum RG10PreprocessingConfigurationError:
     Error,
     Sendable,
@@ -13,4 +15,7 @@ public enum RG10PreprocessingConfigurationError:
     case invalidColorMatrix
     case invalidLetterboxColor
     case invalidNormalization
+    case unsupportedResizePolicy(
+        VisionModelInputDescriptor.ResizePolicy
+    )
 }

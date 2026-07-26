@@ -1,4 +1,5 @@
 import CTensorRTShim
+import OpenVision
 
 /// A lease over the provider-owned CUDA tensor produced by RG10 preprocessing.
 ///
@@ -14,8 +15,8 @@ public final class RG10DeviceTensor: Sendable {
     public let width: Int
     public let height: Int
     public let channelCount: Int
-    public let layout: TensorLayout
-    public let channelOrder: TensorChannelOrder
+    public let layout: VisionTensorLayout
+    public let channelOrder: VisionTensorChannelOrder
 
     private let address: UInt
     private let owner: RG10PreprocessorHandleOwner

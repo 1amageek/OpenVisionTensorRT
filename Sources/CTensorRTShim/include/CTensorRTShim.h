@@ -183,8 +183,12 @@ typedef struct OVTRTRG10PreprocessingConfiguration {
     float letterboxR;
     float letterboxG;
     float letterboxB;
-    float normalizationScale;
-    float normalizationBias;
+    float normalizationScaleR;
+    float normalizationScaleG;
+    float normalizationScaleB;
+    float normalizationBiasR;
+    float normalizationBiasG;
+    float normalizationBiasB;
     uint8_t applySRGBTransfer;
 } OVTRTRG10PreprocessingConfiguration;
 

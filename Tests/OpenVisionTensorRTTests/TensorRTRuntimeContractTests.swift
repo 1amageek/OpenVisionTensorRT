@@ -139,19 +139,7 @@ struct TensorRTRuntimeContractTests {
 
     @Test("Engine artifact rejects missing compatibility evidence")
     func artifactValidation() throws {
-        let model = VisionModelDescriptor(
-            id: "fixture",
-            revision: "1",
-            request: .detectHumanBodyPoseRequest(.revision2),
-            input: try VisionModelInputDescriptor(
-                width: 256,
-                height: 256,
-                pixelFormat: .rgba32,
-                resizePolicy: .scaleFit,
-                normalization: .zeroToOne
-            ),
-            outputSchemaRevision: "body-1"
-        )
+        let model = try RTMDetDWPoseBodyPoseManifest.manifest()
 
         #expect(throws: TensorRTEngineArtifactError.emptyChecksum) {
             _ = try TensorRTEngineArtifactDescriptor(
@@ -164,6 +152,74 @@ struct TensorRTRuntimeContractTests {
                 precision: .float16
             )
         }
+        #expect(
+            throws:
+                TensorRTEngineArtifactError.invalidChecksum(
+                    "not-a-checksum"
+                )
+        ) {
+            _ = try TensorRTEngineArtifactDescriptor(
+                semanticModel: model,
+                checksum: "not-a-checksum",
+                tensorRTVersion: 10_000,
+                cudaRuntimeVersion: 12_000,
+                computeCapabilityMajor: 8,
+                computeCapabilityMinor: 7,
+                precision: .float16
+            )
+        }
+        #expect(
+            throws:
+                TensorRTEngineArtifactError
+                    .unsupportedPrecision(.int8)
+        ) {
+            _ = try TensorRTEngineArtifactDescriptor(
+                semanticModel: model,
+                checksum: String(repeating: "0", count: 64),
+                tensorRTVersion: 10_000,
+                cudaRuntimeVersion: 12_000,
+                computeCapabilityMajor: 8,
+                computeCapabilityMinor: 7,
+                precision: .int8
+            )
+        }
+    }
+
+    @Test("RG10 rejects region affine instead of changing semantics")
+    func regionAffineRequiresDedicatedPreprocessor() {
+        #expect(
+            throws:
+                RG10PreprocessingConfigurationError
+                    .unsupportedResizePolicy(.regionAffine)
+        ) {
+            _ = try makeRG10Configuration(
+                resizePolicy: .regionAffine
+            )
+        }
+    }
+
+    @Test("RG10 preserves channelwise normalization")
+    func channelwiseNormalization() throws {
+        let normalization =
+            try VisionModelInputDescriptor.Normalization
+                .channelwiseAffine(
+                    redScale: 1,
+                    greenScale: 2,
+                    blueScale: 3,
+                    redBias: 4,
+                    greenBias: 5,
+                    blueBias: 6
+                )
+        let configuration = try makeRG10Configuration(
+            normalization: normalization
+        )
+
+        #expect(configuration.normalization.scale.red == 1)
+        #expect(configuration.normalization.scale.green == 2)
+        #expect(configuration.normalization.scale.blue == 3)
+        #expect(configuration.normalization.bias.red == 4)
+        #expect(configuration.normalization.bias.green == 5)
+        #expect(configuration.normalization.bias.blue == 6)
     }
 
     @Test("RG10 preprocessing configuration validates camera layout")
@@ -339,7 +395,11 @@ struct TensorRTRuntimeContractTests {
         sourceBytesPerRow: Int = 3840,
         sourceByteCount: Int = 4_147_200,
         outputWidth: Int = 256,
-        outputHeight: Int = 256
+        outputHeight: Int = 256,
+        resizePolicy:
+            VisionModelInputDescriptor.ResizePolicy = .scaleFit,
+        normalization:
+            VisionModelInputDescriptor.Normalization = .zeroToOne
     ) throws -> RG10PreprocessingConfiguration {
         try RG10PreprocessingConfiguration(
             sourceWidth: sourceWidth,
@@ -348,7 +408,7 @@ struct TensorRTRuntimeContractTests {
             sourceByteCount: sourceByteCount,
             outputWidth: outputWidth,
             outputHeight: outputHeight,
-            resizePolicy: .scaleFit,
+            resizePolicy: resizePolicy,
             tensorLayout: .channelsFirst,
             channelOrder: .rgb,
             blackLevels: .init(
@@ -365,7 +425,7 @@ struct TensorRTRuntimeContractTests {
                 blue: 1
             ),
             colorMatrix: .identity,
-            normalization: .zeroToOne,
+            normalization: normalization,
             appliesSRGBTransfer: false
         )
     }

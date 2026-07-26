@@ -31,11 +31,17 @@
 - [x] Differential GPU/CPU fixtures for all orientations and resize policies
 - [x] Independent RGGB golden fixture
 - [x] Jetson preprocessing p50/p95 and end-to-end frame-path measurements
+- [x] Backend-neutral two-stage semantic model manifest
+- [x] RTMDet-nano detector input, output, and exact provenance contract
+- [x] DWPose-m region-affine, SimCC, and exact provenance contract
+- [x] Complete OpenVision body and bilateral hand joint mapping
+- [x] Per-channel normalization propagated to the fused CUDA kernel ABI
+- [x] Typed rejection of region-affine input by the full-frame preprocessor
 
 ## Incomplete production work
 
-- [ ] Select the semantic body/hand pose model and joint schema.
 - [ ] Deserialize and validate a matching TensorRT engine.
+- [ ] Implement detector decode, bounded ROI selection, and GPU region affine.
 - [ ] Implement reusable TensorRT execution contexts and inference workspace.
 - [ ] Implement request execution and observation decoding.
 - [ ] Conform the production provider to `VisionProvider`.
@@ -50,20 +56,29 @@ be mistaken for successful production execution.
 
 | Check | Current evidence |
 |---|---|
-| macOS unavailable, configuration, and lifecycle behavior | 13 tests passed with `xcodebuild test` |
-| macOS sanitizer behavior | The same 13 tests passed with Address Sanitizer and Thread Sanitizer |
+| macOS unavailable, configuration, lifecycle, and semantic manifest behavior | 19 tests passed with `xcodebuild test` |
+| macOS sanitizer behavior | The same 19 tests passed with Address Sanitizer and Thread Sanitizer |
 | Regular WASM | Debug and release `OpenVisionTensorRT` target builds passed with the matching 2026-07-17 SDK |
 | Embedded WASM | Debug and release `OpenVisionTensorRT` target builds passed with the matching 2026-07-17 SDK |
 | Jetson runtime | TensorRT 10.16.2 and CUDA 13.2 reported one device |
 | Jetson sanitizer behavior | The full runtime and transfer path passed ASan and UBSan; leak detection is unavailable under Wendy device supervision |
 | TensorRT ownership | Real `IRuntime` creation and destruction passed on Jetson |
-| Representative H2D transfer | 4,147,200 bytes; 110/110 copies; p50 0.169664 ms; p95 0.170720 ms |
-| Representative H2D throughput | p50 24.444 GB/s; p95 24.292 GB/s |
+| Representative H2D transfer | 4,147,200 bytes; 110/110 copies; p50 0.170016 ms; p95 0.171136 ms |
+| Representative H2D throughput | p50 24.393 GB/s; p95 24.233 GB/s |
 | Transfer ownership probe | Host registration, source-address preservation, input-consumed event, and byte verification passed |
 | Transfer allocation | Two pre-warm-up host buffers, one device buffer, zero frame-sized allocations after warm-up |
-| RG10 differential verification | 24 GPU/CPU orientation/resize cases plus one independent RGGB golden fixture; maximum absolute difference 0.00000012 |
-| RG10 GPU pipeline | 1920x1080 RG10 to 256x256 tensor including one H2D; p50 0.657248 ms; p95 0.675616 ms |
-| RG10 end-to-end preprocessing | p50 0.667455 ms; p95 0.686560 ms; one H2D, one kernel, zero explicit post-prepare frame-sized device allocations |
+| RG10 differential verification | 24 GPU/CPU orientation/resize cases, including distinct per-channel normalization, plus one independent RGGB golden fixture; maximum absolute difference 0.00000012 |
+| RG10 GPU pipeline | 1920x1080 RG10 to 256x256 tensor including one H2D; p50 0.653184 ms; p95 0.696288 ms |
+| RG10 end-to-end preprocessing | p50 0.663581 ms; p95 0.706149 ms; one H2D, one kernel, zero explicit post-prepare frame-sized device allocations |
 | Public Swift Jetson path | `VisionImageInput` borrow, CUDA tensor lease, nonzero device address, input release, tensor release, and shutdown passed |
 | Retryable cleanup | Injected stream-synchronization failure retained a non-null owner; second destruction succeeded |
-| Model inference | Not implemented; no semantic model has been selected |
+| Semantic model | RTMDet-nano plus DWPose-m manifest fixes exact preprocessing, tensor shapes, 61 body/hand mappings, source revisions, and SHA-256 digests |
+| Model inference | Not implemented; no TensorRT engine is accepted yet |
+
+## Release gates beyond implementation
+
+- The selected checkpoints are a bring-up baseline. Ceiling-view camera
+  accuracy and false-positive behavior remain unmeasured.
+- `licenseIdentifier` remains absent for both checkpoint provenances until the
+  model and training-dataset usage review is complete.
+- Neither condition is converted into a successful production-readiness claim.

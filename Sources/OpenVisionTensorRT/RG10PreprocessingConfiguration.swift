@@ -1,6 +1,12 @@
 import OpenVision
 
 public struct RG10PreprocessingConfiguration: Sendable, Hashable {
+    enum SupportedResizePolicy: Sendable, Hashable {
+        case scaleFill
+        case scaleFit
+        case centerCrop
+    }
+
     public static let pixelFormatRawValue: UInt32 = 0x3031_4752
     public static let maximumSourceByteCount = 512 * 1024 * 1024
     public static let maximumOutputElementCount =
@@ -13,8 +19,8 @@ public struct RG10PreprocessingConfiguration: Sendable, Hashable {
     public let outputWidth: Int
     public let outputHeight: Int
     public let resizePolicy: VisionModelInputDescriptor.ResizePolicy
-    public let tensorLayout: TensorLayout
-    public let channelOrder: TensorChannelOrder
+    public let tensorLayout: VisionTensorLayout
+    public let channelOrder: VisionTensorChannelOrder
     public let blackLevels: RG10BayerValues
     public let whiteLevel: Float
     public let gains: RG10BayerValues
@@ -23,6 +29,7 @@ public struct RG10PreprocessingConfiguration: Sendable, Hashable {
     public let normalization:
         VisionModelInputDescriptor.Normalization
     public let appliesSRGBTransfer: Bool
+    let supportedResizePolicy: SupportedResizePolicy
 
     public init(
         sourceWidth: Int,
@@ -32,8 +39,8 @@ public struct RG10PreprocessingConfiguration: Sendable, Hashable {
         outputWidth: Int,
         outputHeight: Int,
         resizePolicy: VisionModelInputDescriptor.ResizePolicy,
-        tensorLayout: TensorLayout,
-        channelOrder: TensorChannelOrder,
+        tensorLayout: VisionTensorLayout,
+        channelOrder: VisionTensorChannelOrder,
         blackLevels: RG10BayerValues,
         whiteLevel: Float,
         gains: RG10BayerValues,
@@ -115,18 +122,22 @@ public struct RG10PreprocessingConfiguration: Sendable, Hashable {
         }) else {
             throw .invalidLetterboxColor
         }
-        let normalizationValues: (Float, Float)
-        switch normalization {
-        case .zeroToOne:
-            normalizationValues = (1, 0)
-        case .negativeOneToOne:
-            normalizationValues = (2, -1)
-        case .affine(let scale, let bias):
-            normalizationValues = (scale, bias)
+        let supportedResizePolicy: SupportedResizePolicy
+        switch resizePolicy {
+        case .scaleFill:
+            supportedResizePolicy = .scaleFill
+        case .scaleFit:
+            supportedResizePolicy = .scaleFit
+        case .centerCrop:
+            supportedResizePolicy = .centerCrop
+        case .regionAffine:
+            throw .unsupportedResizePolicy(resizePolicy)
         }
+        let normalizationValues =
+            Self.values(normalization.scale) +
+            Self.values(normalization.bias)
         guard
-            Self.isFinite(normalizationValues.0),
-            Self.isFinite(normalizationValues.1)
+            normalizationValues.allSatisfy(Self.isFinite)
         else {
             throw .invalidNormalization
         }
@@ -147,6 +158,7 @@ public struct RG10PreprocessingConfiguration: Sendable, Hashable {
         self.letterboxColor = letterboxColor
         self.normalization = normalization
         self.appliesSRGBTransfer = appliesSRGBTransfer
+        self.supportedResizePolicy = supportedResizePolicy
     }
 
     private static func isFinite(_ value: Float) -> Bool {
@@ -165,6 +177,12 @@ public struct RG10PreprocessingConfiguration: Sendable, Hashable {
     }
 
     private static func values(_ value: RGBTriplet) -> [Float] {
+        [value.red, value.green, value.blue]
+    }
+
+    private static func values(
+        _ value: VisionModelInputDescriptor.RGBValues
+    ) -> [Float] {
         [value.red, value.green, value.blue]
     }
 

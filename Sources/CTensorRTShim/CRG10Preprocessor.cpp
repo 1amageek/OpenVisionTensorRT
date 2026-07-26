@@ -140,8 +140,12 @@ bool isValidConfiguration(
         !isUnitValue(configuration.letterboxR) ||
         !isUnitValue(configuration.letterboxG) ||
         !isUnitValue(configuration.letterboxB) ||
-        !isFinite(configuration.normalizationScale) ||
-        !isFinite(configuration.normalizationBias)
+        !isFinite(configuration.normalizationScaleR) ||
+        !isFinite(configuration.normalizationScaleG) ||
+        !isFinite(configuration.normalizationScaleB) ||
+        !isFinite(configuration.normalizationBiasR) ||
+        !isFinite(configuration.normalizationBiasG) ||
+        !isFinite(configuration.normalizationBiasB)
     ) {
         return false;
     }
@@ -312,7 +316,7 @@ struct RG10RuntimeAPI {
     }
 };
 
-constexpr size_t KERNEL_CONFIGURATION_FLOAT_COUNT = 23;
+constexpr size_t KERNEL_CONFIGURATION_FLOAT_COUNT = 27;
 
 char const *RG10_KERNEL_SOURCE = R"cuda(
 extern "C" {
@@ -626,9 +630,9 @@ __global__ void ovtrt_rg10_preprocess(
         }
     }
 
-    red = red * configuration[21] + configuration[22];
-    green = green * configuration[21] + configuration[22];
-    blue = blue * configuration[21] + configuration[22];
+    red = red * configuration[21] + configuration[24];
+    green = green * configuration[22] + configuration[25];
+    blue = blue * configuration[23] + configuration[26];
     float channels[3];
     if (channelOrder == 0U) {
         channels[0] = red;
@@ -1398,8 +1402,12 @@ OVTRTStatus ovtrt_rg10_preprocessor_create(
         configuration->letterboxR,
         configuration->letterboxG,
         configuration->letterboxB,
-        configuration->normalizationScale,
-        configuration->normalizationBias
+        configuration->normalizationScaleR,
+        configuration->normalizationScaleG,
+        configuration->normalizationScaleB,
+        configuration->normalizationBiasR,
+        configuration->normalizationBiasG,
+        configuration->normalizationBiasB
     };
     if (result->failureStage == OVTRTRG10PreprocessingStageNone) {
         cudaStatus = owner->api.cudaMemcpy(
