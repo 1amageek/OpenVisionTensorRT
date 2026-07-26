@@ -25,6 +25,118 @@ struct TensorRTRuntimeContractTests {
         #endif
     }
 
+    @Test("Transfer configuration rejects an empty frame")
+    func emptyTransferFrame() {
+        #expect(
+            throws:
+                CUDATransferProbeConfigurationError
+                    .invalidByteCount(0)
+        ) {
+            _ = try CUDATransferProbeConfiguration(
+                byteCount: 0,
+                warmupIterationCount: 0,
+                measuredIterationCount: 1
+            )
+        }
+    }
+
+    @Test("Transfer configuration requires measurements")
+    func missingMeasuredIterations() {
+        #expect(
+            throws:
+                CUDATransferProbeConfigurationError
+                    .invalidMeasuredIterationCount(0)
+        ) {
+            _ = try CUDATransferProbeConfiguration(
+                byteCount: 4_147_200,
+                warmupIterationCount: 10,
+                measuredIterationCount: 0
+            )
+        }
+    }
+
+    @Test("Transfer configuration enforces resource bounds")
+    func transferResourceBounds() {
+        let excessiveByteCount =
+            CUDATransferProbeConfiguration.maximumByteCount + 1
+        #expect(
+            throws:
+                CUDATransferProbeConfigurationError
+                    .invalidByteCount(excessiveByteCount)
+        ) {
+            _ = try CUDATransferProbeConfiguration(
+                byteCount: excessiveByteCount,
+                warmupIterationCount: 0,
+                measuredIterationCount: 1
+            )
+        }
+
+        let excessiveIterationCount =
+            CUDATransferProbeConfiguration
+                .maximumIterationCount + 1
+        #expect(
+            throws:
+                CUDATransferProbeConfigurationError
+                    .invalidWarmupIterationCount(
+                        excessiveIterationCount
+                    )
+        ) {
+            _ = try CUDATransferProbeConfiguration(
+                byteCount: 1,
+                warmupIterationCount:
+                    excessiveIterationCount,
+                measuredIterationCount: 1
+            )
+        }
+        #expect(
+            throws:
+                CUDATransferProbeConfigurationError
+                    .invalidMeasuredIterationCount(
+                        excessiveIterationCount
+                    )
+        ) {
+            _ = try CUDATransferProbeConfiguration(
+                byteCount: 1,
+                warmupIterationCount: 0,
+                measuredIterationCount:
+                    excessiveIterationCount
+            )
+        }
+    }
+
+    @Test("RG10 transfer shape matches camera storage")
+    func rg10TransferShape() throws {
+        let configuration =
+            try CUDATransferProbeConfiguration.rg10FullHD()
+
+        #expect(configuration.byteCount == 4_147_200)
+        #expect(configuration.warmupIterationCount == 10)
+        #expect(configuration.measuredIterationCount == 100)
+    }
+
+    @Test("Transfer probe exposes typed unavailable evidence")
+    func unavailableTransferProbe() throws {
+        #if os(macOS)
+        let configuration =
+            try CUDATransferProbeConfiguration.rg10FullHD()
+
+        do {
+            _ = try CUDATransferProbe.run(
+                configuration: configuration
+            )
+            Issue.record("Expected the CUDA runtime to be unavailable")
+        } catch let error {
+            guard case .unavailable(let result) = error else {
+                Issue.record("Expected typed unavailable evidence")
+                return
+            }
+            #expect(result.byteCount == configuration.byteCount)
+            #expect(result.failureStage == .libraryOpen)
+            #expect(!result.isTransferContractSatisfied)
+        }
+        #endif
+    }
+
     @Test("Engine artifact rejects missing compatibility evidence")
     func artifactValidation() throws {
         let model = VisionModelDescriptor(

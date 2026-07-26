@@ -38,10 +38,36 @@ RUN g++ \
         -ldl \
         -o openvision-tensorrt-runtime-probe
 
+RUN g++ \
+        -std=c++17 \
+        -O1 \
+        -g \
+        -fno-omit-frame-pointer \
+        -fsanitize=address,undefined \
+        -Wall \
+        -Wextra \
+        -Werror \
+        -isystem /usr/local/cuda-13.2/include \
+        -isystem TensorRT-10.16/include \
+        -I . \
+        CTensorRTShim.cpp \
+        Probe.cpp \
+        -ldl \
+        -o openvision-tensorrt-runtime-probe-sanitized
+
 FROM ubuntu:24.04@sha256:7f622ca8766bccb22f04242ecb6f19f770b2f08827dc4b8c707de5e78a6da7ab
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+        libasan8 \
+        libubsan1 \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder \
     /build/openvision-tensorrt-runtime-probe \
     /usr/local/bin/openvision-tensorrt-runtime-probe
+COPY --from=builder \
+    /build/openvision-tensorrt-runtime-probe-sanitized \
+    /usr/local/bin/openvision-tensorrt-runtime-probe-sanitized
 
-ENTRYPOINT ["/usr/local/bin/openvision-tensorrt-runtime-probe"]
+ENTRYPOINT ["/bin/sh", "-c", "ASAN_OPTIONS=detect_leaks=0 /usr/local/bin/openvision-tensorrt-runtime-probe-sanitized >/dev/null && exec /usr/local/bin/openvision-tensorrt-runtime-probe"]

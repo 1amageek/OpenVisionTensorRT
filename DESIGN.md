@@ -31,8 +31,10 @@ handle.
 
 ```text
 RG10 V4L2 lease
-    -> one synchronous H2D transfer inside scoped Span borrow
-        -> release source input
+    -> register the borrowed host address
+        -> one asynchronous H2D transfer
+            -> synchronize the input-consumed event
+                -> release source input
             -> CUDA demosaic / rotate / resize / normalize
                 -> preallocated TensorRT execution context
                     -> compact OpenVision joints
@@ -42,6 +44,26 @@ Input, preprocessing, output, and workspace device allocations will be created
 during model preparation and reused. No frame-sized allocation is allowed after
 warm-up. Direct import will be advertised only after a DMA-BUF or external
 memory path is proven on the actual Jetson camera storage.
+
+## CUDA transfer probe
+
+The transfer probe establishes the ownership and synchronization contract
+before camera integration. It allocates and initializes one page-aligned host
+source, registers that same address with CUDA, allocates one reusable device
+buffer, and submits one H2D operation per iteration on a non-blocking stream.
+The source borrow ends only when the recorded CUDA event has synchronized.
+
+The source, verification, and device allocations all occur before warm-up.
+Timed iterations allocate no frame-sized storage. The D2H verification copy is
+outside the timed H2D path and exists only to compare the final GPU contents
+with the original source. After stream synchronization, CUDA resources are
+released in dependency-safe order, and primary versus cleanup failures retain
+separate typed stages.
+
+The probe proves a one-copy CUDA ingestion path. It does not claim direct GPU
+import or zero-copy camera-to-GPU access. OpenVision's CPU boundary remains
+zero-copy because the existing owner is borrowed and registered without
+materializing another CPU frame.
 
 ## Performance acceptance budget
 
@@ -62,6 +84,12 @@ reuse a prepared execution slot. The eventual model-specific implementation
 must report copy count, allocation count, p50/p95 latency, host/device resident
 memory, power, and thermal state; runtime creation alone does not satisfy this
 budget.
+
+The 2026-07-26 Jetson probe measured the representative 4,147,200-byte source
+at 0.170080 ms p50 and 0.171040 ms p95, corresponding to 24.384 GB/s and
+24.247 GB/s. All 110 H2D submissions used one copy each, no frame-sized
+allocation occurred after warm-up, and address preservation, completion-event
+ownership, and byte verification passed.
 
 ## Verified Jetson runtime boundary
 
