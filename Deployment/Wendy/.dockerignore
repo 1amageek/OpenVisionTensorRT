@@ -1,0 +1,6 @@
+*
+!.build-context/
+!.build-context/CTensorRTShim.cpp
+!.build-context/CTensorRTShim.h
+!Dockerfile
+!Probe.cpp

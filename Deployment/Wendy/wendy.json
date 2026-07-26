@@ -1,0 +1,10 @@
+{
+  "appId": "com.1amageek.openvision-tensorrt-probe",
+  "platform": "linux",
+  "version": "0.1.0",
+  "entitlements": [
+    {
+      "type": "gpu"
+    }
+  ]
+}
