@@ -37,6 +37,8 @@
 - [x] Complete OpenVision body and bilateral hand joint mapping
 - [x] Per-channel normalization propagated to the fused CUDA kernel ABI
 - [x] Typed rejection of region-affine input by the full-frame preprocessor
+- [x] Reproducible revision- and digest-pinned RTMDet and pose ONNX export
+- [x] ONNX checker and ONNX Runtime verification for exact tensor contracts
 
 ## Incomplete production work
 
@@ -73,6 +75,7 @@ be mistaken for successful production execution.
 | Public Swift Jetson path | `VisionImageInput` borrow, CUDA tensor lease, nonzero device address, input release, tensor release, and shutdown passed |
 | Retryable cleanup | Injected stream-synchronization failure retained a non-null owner; second destruction succeeded |
 | Semantic model | RTMDet-nano plus DWPose-m manifest fixes exact preprocessing, bounded runtime-variable detector output shapes, `int64` labels, 61 body/hand mappings, source revisions, and SHA-256 digests |
+| ONNX exchange graphs | Reproducible export produced detector `68f9b14e...` and pose `9597eb65...`; ONNX checker passed and ONNX Runtime produced the declared detector outputs and pose batches one and four |
 | Model inference | Not implemented; no TensorRT engine is accepted yet |
 
 ## Release gates beyond implementation
