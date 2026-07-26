@@ -2,6 +2,10 @@ import OpenVision
 import OpenVisionTensorRT
 import Synchronization
 
+#if os(Linux)
+import Glibc
+#endif
+
 @main
 enum OpenVisionTensorRTSwiftProbe {
     static func main() async throws {
@@ -15,13 +19,19 @@ enum OpenVisionTensorRTSwiftProbe {
     #if os(Linux)
     private static func run() async throws {
             guard
-                CommandLine.arguments.count == 1 || CommandLine.arguments.count == 3
+                CommandLine.arguments.count == 1 ||
+                CommandLine.arguments.count == 3 ||
+                (
+                    CommandLine.arguments.count == 7 &&
+                    CommandLine.arguments[1] == "--provider"
+                )
             else {
                 throw SwiftProbeError.invalidArguments
             }
             let runsDetector = CommandLine.arguments.count == 3
+            let runsProvider = CommandLine.arguments.count == 7
             let modelInput: VisionModelInputDescriptor?
-            if runsDetector {
+            if runsDetector || runsProvider {
                 let manifest =
                     try RTMDetDWPoseBodyPoseManifest.manifest()
                 guard
@@ -45,11 +55,17 @@ enum OpenVisionTensorRTSwiftProbe {
             byteCount: byteCount,
             alignment: 4096
         )
-        try storage.initializeRG10(
-            width: width,
-            height: height,
-            bytesPerRow: bytesPerRow
-        )
+        if runsProvider {
+            try storage.initializeRG10(
+                filePath: CommandLine.arguments[6]
+            )
+        } else {
+            try storage.initializeRG10(
+                width: width,
+                height: height,
+                bytesPerRow: bytesPerRow
+            )
+        }
         let dimensions = try CVPixelDimensions(
             width: width,
             height: height
@@ -154,6 +170,20 @@ enum OpenVisionTensorRTSwiftProbe {
                 appliesSRGBTransfer:
                     modelInput?.transferFunction == .sRGB
         )
+        if runsProvider {
+            try await runProvider(
+                initialInput: input,
+                sample: sample,
+                clock: clock,
+                calibration: calibration,
+                preprocessing: configuration,
+                detectorPath: CommandLine.arguments[2],
+                detectorChecksum: CommandLine.arguments[3],
+                posePath: CommandLine.arguments[4],
+                poseChecksum: CommandLine.arguments[5]
+            )
+            return
+        }
         let preprocessor = try RG10Preprocessor(
             configuration: configuration
         )
@@ -213,6 +243,307 @@ enum OpenVisionTensorRTSwiftProbe {
         )
     }
 
+        private static func runProvider(
+            initialInput: VisionImageInput,
+            sample: CMImageSampleBuffer,
+            clock: VisionClockDomain,
+            calibration: VisionCameraCalibration,
+            preprocessing: RG10PreprocessingConfiguration,
+            detectorPath: String,
+            detectorChecksum: String,
+            posePath: String,
+            poseChecksum: String
+        ) async throws {
+            let manifest =
+                try RTMDetDWPoseBodyPoseManifest.manifest()
+            let detectorArtifact = try stageArtifact(
+                manifest: manifest,
+                checksum: detectorChecksum,
+                stage:
+                    RTMDetDWPoseBodyPoseManifest
+                    .personDetectionStage,
+                bindings: [
+                    (
+                        RTMDetDWPoseBodyPoseManifest
+                            .detectionsTensor,
+                        "dets"
+                    ),
+                    (
+                        RTMDetDWPoseBodyPoseManifest
+                            .classesTensor,
+                        "labels"
+                    ),
+                ]
+            )
+            let poseArtifact = try stageArtifact(
+                manifest: manifest,
+                checksum: poseChecksum,
+                stage:
+                    RTMDetDWPoseBodyPoseManifest
+                    .wholeBodyPoseStage,
+                bindings: [
+                    (
+                        RTMDetDWPoseBodyPoseManifest
+                            .simCCXTensor,
+                        "simcc_x"
+                    ),
+                    (
+                        RTMDetDWPoseBodyPoseManifest
+                            .simCCYTensor,
+                        "simcc_y"
+                    ),
+                ]
+            )
+            let providerConfiguration =
+                try OpenVisionTensorRTProviderConfiguration(
+                    model: manifest,
+                    detectorPlanPath: detectorPath,
+                    detectorArtifact: detectorArtifact,
+                    posePlanPath: posePath,
+                    poseArtifact: poseArtifact,
+                    detectorPreprocessing: preprocessing
+                )
+            let provider = try OpenVisionTensorRTProvider(
+                configuration: providerConfiguration
+            )
+            let session = try await provider.makeSession(
+                configuration: VisionSessionConfiguration(
+                    model: manifest,
+                    transferMode:
+                        .stagedHostToDevice(fullFrameCopyCount: 1),
+                    computeDevices: [
+                        .main:
+                            OpenVisionTensorRTProvider.cudaDevice,
+                        .postProcessing:
+                            OpenVisionTensorRTProvider.cudaDevice,
+                    ]
+                )
+            )
+            var request = DetectHumanBodyPoseRequest(.revision2)
+            request.detectsHands = true
+            let warmupIterationCount = 5
+            let measuredIterationCount = 30
+            let totalIterationCount =
+                warmupIterationCount + measuredIterationCount
+            var measurements: [Float] = []
+            measurements.reserveCapacity(measuredIterationCount)
+            var expectedCounts: (observations: Int, body: Int, hands: Int)?
+            for iteration in 0..<totalIterationCount {
+                let sequence = UInt64(iteration + 1)
+                let input: VisionImageInput
+                if iteration == 0 {
+                    input = initialInput
+                } else {
+                    input = try VisionImageInput(
+                        sampleBuffer: sample,
+                        frameID: VisionFrameID(
+                            source: "jetson-swift-probe",
+                            sequence: sequence
+                        ),
+                        clockDomain: clock,
+                        calibration: calibration
+                    )
+                }
+                let executionID = VisionExecutionID(
+                    sessionID: session.descriptor.id,
+                    sequence: sequence
+                )
+                let start = try monotonicNanoseconds()
+                let observations =
+                    try await session.bodyPoseObservations(
+                        for: request,
+                        input: input,
+                        executionID: executionID
+                    )
+                let end = try monotonicNanoseconds()
+                guard !observations.isEmpty, input.isReleased else {
+                    throw SwiftProbeError.contractViolation
+                }
+                var bodyJointCount = 0
+                var handJointCount = 0
+                for observation in observations {
+                    guard
+                        !observation.availableJointNames.isEmpty
+                    else {
+                        throw SwiftProbeError.contractViolation
+                    }
+                    for joint in observation.allJoints().values {
+                        guard
+                            (0 ... 1).contains(joint.location.x),
+                            (0 ... 1).contains(joint.location.y),
+                            (0 ... 1).contains(joint.confidence)
+                        else {
+                            throw SwiftProbeError.contractViolation
+                        }
+                        bodyJointCount += 1
+                    }
+                    handJointCount +=
+                        observation.leftHand?
+                        .availableJointNames.count ?? 0
+                    handJointCount +=
+                        observation.rightHand?
+                        .availableJointNames.count ?? 0
+                }
+                let counts = (
+                    observations: observations.count,
+                    body: bodyJointCount,
+                    hands: handJointCount
+                )
+                if let expectedCounts {
+                    guard
+                        counts.observations ==
+                            expectedCounts.observations,
+                        counts.body == expectedCounts.body,
+                        counts.hands == expectedCounts.hands
+                    else {
+                        throw SwiftProbeError.contractViolation
+                    }
+                } else {
+                    expectedCounts = counts
+                }
+                if iteration >= warmupIterationCount {
+                    measurements.append(
+                        Float(end - start) / 1_000_000.0
+                    )
+                }
+            }
+            guard
+                let expectedCounts,
+                measurements.count == measuredIterationCount
+            else {
+                throw SwiftProbeError.contractViolation
+            }
+            let sortedMeasurements = measurements.sorted()
+            try await session.shutdown()
+            print(
+                "{\"status\":\"available\","
+                    + "\"providerPath\":\"passed\","
+                    + "\"inputReleased\":true,"
+                    + "\"warmupIterations\":"
+                    + String(warmupIterationCount)
+                    + ",\"measuredIterations\":"
+                    + String(measuredIterationCount)
+                    + ",\"endToEndP50Milliseconds\":"
+                    + String(
+                        percentile(
+                            sortedMeasurements,
+                            percentile: 0.50
+                        )
+                    )
+                    + ",\"endToEndP95Milliseconds\":"
+                    + String(
+                        percentile(
+                            sortedMeasurements,
+                            percentile: 0.95
+                        )
+                    )
+                    + ",\"stableObservationCounts\":true,"
+                    + "\"observationCount\":"
+                    + String(expectedCounts.observations)
+                    + ",\"bodyJointCount\":"
+                    + String(expectedCounts.body)
+                    + ",\"handJointCount\":"
+                    + String(expectedCounts.hands)
+                    + "}"
+            )
+        }
+
+        private static func monotonicNanoseconds() throws -> UInt64 {
+            var value = timespec()
+            guard clock_gettime(CLOCK_MONOTONIC_RAW, &value) == 0 else {
+                throw SwiftProbeError.contractViolation
+            }
+            guard
+                let seconds = UInt64(exactly: value.tv_sec),
+                let nanoseconds = UInt64(exactly: value.tv_nsec),
+                nanoseconds < 1_000_000_000
+            else {
+                throw SwiftProbeError.contractViolation
+            }
+            let secondComponent =
+                seconds.multipliedReportingOverflow(
+                    by: 1_000_000_000
+                )
+            guard !secondComponent.overflow else {
+                throw SwiftProbeError.contractViolation
+            }
+            let total =
+                secondComponent.partialValue
+                .addingReportingOverflow(nanoseconds)
+            guard !total.overflow else {
+                throw SwiftProbeError.contractViolation
+            }
+            return total.partialValue
+        }
+
+        private static func stageArtifact(
+            manifest: VisionModelManifest,
+            checksum: String,
+            stage: VisionModelStageID,
+            bindings: [(VisionModelTensorID, String)]
+        ) throws -> TensorRTStageEngineArtifactDescriptor {
+            let artifact = try TensorRTEngineArtifactDescriptor(
+                semanticModel: manifest,
+                checksum: checksum,
+                tensorRTVersion: 101_602,
+                cudaRuntimeVersion: 13_020,
+                computeCapabilityMajor: 8,
+                computeCapabilityMinor: 7,
+                precision: .float16
+            )
+            var outputs: [TensorRTEngineOutputBinding] = []
+            outputs.reserveCapacity(bindings.count)
+            for (semanticID, engineName) in bindings {
+                outputs.append(
+                    try TensorRTEngineOutputBinding(
+                        semanticTensorID: semanticID,
+                        engineTensorName: engineName,
+                        executionElementCapacity:
+                            detectorExecutionElementCapacity(
+                                stage: stage,
+                                semanticID: semanticID
+                            )
+                    )
+                )
+            }
+            return try TensorRTStageEngineArtifactDescriptor(
+                artifact: artifact,
+                stageID: stage,
+                inputTensorName: "input",
+                outputBindings: outputs
+            )
+        }
+
+        private static func detectorExecutionElementCapacity(
+            stage: VisionModelStageID,
+            semanticID: VisionModelTensorID
+        ) -> Int? {
+            guard
+                stage ==
+                    RTMDetDWPoseBodyPoseManifest
+                    .personDetectionStage
+            else {
+                return nil
+            }
+            if
+                semanticID ==
+                    RTMDetDWPoseBodyPoseManifest.detectionsTensor
+            {
+                return
+                    OpenVisionTensorRTProviderConfiguration
+                    .detectorExecutionCandidateCount * 5
+            }
+            if
+                semanticID ==
+                    RTMDetDWPoseBodyPoseManifest.classesTensor
+            {
+                return
+                    OpenVisionTensorRTProviderConfiguration
+                    .detectorExecutionCandidateCount
+            }
+            return nil
+        }
+
         private static func runDetector(
             input: RG10DeviceTensor,
             path: String,
@@ -240,13 +571,19 @@ enum OpenVisionTensorRTSwiftProbe {
                         semanticTensorID:
                             RTMDetDWPoseBodyPoseManifest
                             .detectionsTensor,
-                        engineTensorName: "dets"
+                        engineTensorName: "dets",
+                        executionElementCapacity:
+                            OpenVisionTensorRTProviderConfiguration
+                            .detectorExecutionCandidateCount * 5
                     ),
                     try TensorRTEngineOutputBinding(
                         semanticTensorID:
                             RTMDetDWPoseBodyPoseManifest
                             .classesTensor,
-                        engineTensorName: "labels"
+                        engineTensorName: "labels",
+                        executionElementCapacity:
+                            OpenVisionTensorRTProviderConfiguration
+                            .detectorExecutionCandidateCount
                     ),
                 ]
             )
@@ -371,6 +708,7 @@ private enum SwiftProbeError: Error {
     case invalidArguments
     case allocationFailed
     case storageReleased
+    case invalidFixture
     case contractViolation
 }
 
@@ -435,6 +773,49 @@ private final class RG10ProbeStorage: Sendable {
             }
         }
     }
+
+    #if os(Linux)
+    func initializeRG10(
+        filePath: String
+    ) throws(SwiftProbeError) {
+        let descriptor = filePath.withCString {
+            Glibc.open($0, O_RDONLY)
+        }
+        guard descriptor >= 0 else {
+            throw .invalidFixture
+        }
+        defer {
+            _ = Glibc.close(descriptor)
+        }
+        var status = stat()
+        guard
+            Glibc.fstat(descriptor, &status) == 0,
+            status.st_size == byteCount
+        else {
+            throw .invalidFixture
+        }
+        let address = state.withLock { $0.address }
+        guard
+            let address,
+            let pointer =
+                UnsafeMutableRawPointer(bitPattern: address)
+        else {
+            throw .storageReleased
+        }
+        var offset = 0
+        while offset < byteCount {
+            let readCount = Glibc.read(
+                descriptor,
+                pointer.advanced(by: offset),
+                byteCount - offset
+            )
+            guard readCount > 0 else {
+                throw .invalidFixture
+            }
+            offset += readCount
+        }
+    }
+    #endif
 
     func withReadBytes(
         _ body: (borrowing Span<UInt8>) -> Void

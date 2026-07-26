@@ -37,6 +37,7 @@ typedef struct OVTRTProbeResult {
 
 typedef struct OVTRTRuntime OVTRTRuntime;
 typedef struct OVTRTRG10Preprocessor OVTRTRG10Preprocessor;
+typedef struct OVTRTPosePipeline OVTRTPosePipeline;
 typedef struct OVTRTEngine OVTRTEngine;
 
 typedef enum OVTRTEngineLoadStage {
@@ -332,6 +333,114 @@ typedef struct OVTRTDeviceTensorView {
     OVTRTTensorChannelOrder channelOrder;
 } OVTRTDeviceTensorView;
 
+typedef struct OVTRTRG10SourceView {
+    void const *deviceAddress;
+    uint64_t byteCount;
+    uint32_t width;
+    uint32_t height;
+    uint32_t bytesPerRow;
+} OVTRTRG10SourceView;
+
+typedef enum OVTRTPosePipelineStage {
+    OVTRTPosePipelineStageNone = 0,
+    OVTRTPosePipelineStageConfiguration = 1,
+    OVTRTPosePipelineStageLibraryOpen = 2,
+    OVTRTPosePipelineStageSymbolLoad = 3,
+    OVTRTPosePipelineStageStreamCreation = 4,
+    OVTRTPosePipelineStageDeviceAllocation = 5,
+    OVTRTPosePipelineStageConfigurationTransfer = 6,
+    OVTRTPosePipelineStageNVRTCProgramCreation = 7,
+    OVTRTPosePipelineStageNVRTCCompilation = 8,
+    OVTRTPosePipelineStagePTXAccess = 9,
+    OVTRTPosePipelineStageDriverInitialization = 10,
+    OVTRTPosePipelineStageModuleLoad = 11,
+    OVTRTPosePipelineStageKernelLookup = 12,
+    OVTRTPosePipelineStageRegionSelection = 13,
+    OVTRTPosePipelineStageRegionReadback = 14,
+    OVTRTPosePipelineStageRegionAffine = 15,
+    OVTRTPosePipelineStagePoseSynchronization = 16,
+    OVTRTPosePipelineStageSimCCDecode = 17,
+    OVTRTPosePipelineStageJointReadback = 18,
+    OVTRTPosePipelineStageStreamSynchronization = 19,
+    OVTRTPosePipelineStageModuleUnload = 20,
+    OVTRTPosePipelineStageDeviceDeallocation = 21,
+    OVTRTPosePipelineStageStreamDestruction = 22,
+    OVTRTPosePipelineStageLibraryClose = 23
+} OVTRTPosePipelineStage;
+
+typedef struct OVTRTPosePipelineConfiguration {
+    uint32_t sourceWidth;
+    uint32_t sourceHeight;
+    uint32_t sourceBytesPerRow;
+    uint32_t detectorInputWidth;
+    uint32_t detectorInputHeight;
+    uint32_t poseInputWidth;
+    uint32_t poseInputHeight;
+    uint32_t maximumRegionCount;
+    uint32_t jointCount;
+    float minimumDetectionConfidence;
+    float regionScale;
+    float blackLevelR;
+    float blackLevelGreenR;
+    float blackLevelGreenB;
+    float blackLevelB;
+    float whiteLevel;
+    float gainR;
+    float gainGreenR;
+    float gainGreenB;
+    float gainB;
+    float colorMatrix00;
+    float colorMatrix01;
+    float colorMatrix02;
+    float colorMatrix10;
+    float colorMatrix11;
+    float colorMatrix12;
+    float colorMatrix20;
+    float colorMatrix21;
+    float colorMatrix22;
+    float normalizationScaleR;
+    float normalizationScaleG;
+    float normalizationScaleB;
+    float normalizationBiasR;
+    float normalizationBiasG;
+    float normalizationBiasB;
+    uint8_t applySRGBTransfer;
+} OVTRTPosePipelineConfiguration;
+
+typedef struct OVTRTPoseRegion {
+    float centerX;
+    float centerY;
+    float width;
+    float height;
+    float confidence;
+} OVTRTPoseRegion;
+
+typedef struct OVTRTPoseJoint {
+    float normalizedX;
+    float normalizedY;
+    float confidence;
+} OVTRTPoseJoint;
+
+typedef struct OVTRTPosePipelineResult {
+    uint32_t selectedRegionCount;
+    uint32_t regionSelectionKernelLaunchCount;
+    uint32_t regionAffineKernelLaunchCount;
+    uint32_t simCCDecodeKernelLaunchCount;
+    uint32_t compactDeviceToHostCopyCount;
+    uint32_t explicitFrameDeviceAllocationCount;
+    uint64_t persistentDeviceAllocationByteCount;
+    uint64_t poseInputByteCount;
+    uint64_t compactReadbackByteCount;
+    int32_t cudaErrorCode;
+    int32_t cudaDriverErrorCode;
+    int32_t nvrtcErrorCode;
+    int32_t cleanupCUDAErrorCode;
+    int32_t cleanupCUDADriverErrorCode;
+    int32_t cleanupDynamicLoaderErrorCode;
+    OVTRTPosePipelineStage failureStage;
+    OVTRTPosePipelineStage cleanupFailureStage;
+} OVTRTPosePipelineResult;
+
 OVTRTStatus ovtrt_probe(OVTRTProbeResult *result);
 
 OVTRTStatus ovtrt_cuda_transfer_probe(
@@ -363,6 +472,11 @@ OVTRTStatus ovtrt_rg10_preprocessor_output(
     OVTRTDeviceTensorView *output
 );
 
+OVTRTStatus ovtrt_rg10_preprocessor_source(
+    OVTRTRG10Preprocessor *preprocessor,
+    OVTRTRG10SourceView *source
+);
+
 OVTRTStatus ovtrt_rg10_preprocessor_copy_output(
     OVTRTRG10Preprocessor *preprocessor,
     float *destination,
@@ -373,6 +487,42 @@ OVTRTStatus ovtrt_rg10_preprocessor_copy_output(
 OVTRTStatus ovtrt_rg10_preprocessor_destroy(
     OVTRTRG10Preprocessor **preprocessor,
     OVTRTRG10PreprocessingResult *result
+);
+
+OVTRTStatus ovtrt_pose_pipeline_create(
+    OVTRTPosePipelineConfiguration const *configuration,
+    OVTRTPosePipeline **pipeline,
+    OVTRTPosePipelineResult *result
+);
+
+OVTRTStatus ovtrt_pose_pipeline_prepare_input(
+    OVTRTPosePipeline *pipeline,
+    OVTRTRG10SourceView const *source,
+    void const *detectionsDeviceAddress,
+    uint64_t detectionCount,
+    void const *classesDeviceAddress,
+    uint64_t classCount,
+    OVTRTRG10Orientation orientation,
+    OVTRTPoseRegion *regions,
+    uint32_t regionCapacity,
+    OVTRTDeviceTensorView *poseInput,
+    OVTRTPosePipelineResult *result
+);
+
+OVTRTStatus ovtrt_pose_pipeline_decode_simcc(
+    OVTRTPosePipeline *pipeline,
+    void const *simCCXDeviceAddress,
+    uint64_t simCCXElementCount,
+    void const *simCCYDeviceAddress,
+    uint64_t simCCYElementCount,
+    OVTRTPoseJoint *joints,
+    uint64_t jointCapacity,
+    OVTRTPosePipelineResult *result
+);
+
+OVTRTStatus ovtrt_pose_pipeline_destroy(
+    OVTRTPosePipeline **pipeline,
+    OVTRTPosePipelineResult *result
 );
 
 #if defined(OVTRT_ENABLE_TEST_HOOKS)

@@ -347,6 +347,20 @@ public actor TensorRTEngine {
             else {
                 throw .invalidOutputCapacity(descriptor.name)
             }
+            if let executionElementCapacity =
+                binding.executionElementCapacity
+            {
+                guard
+                    let converted = UInt64(
+                        exactly: executionElementCapacity
+                    )
+                else {
+                    throw .invalidOutputCapacity(
+                        descriptor.name
+                    )
+                }
+                elementCount = max(elementCount, converted)
+            }
             let byteCount =
                 elementCount
                 .multipliedReportingOverflow(
@@ -509,6 +523,10 @@ public actor TensorRTEngine {
             }
             shape.append(dimension)
         }
+        try validateOutputShape(
+            shape,
+            engineTensorName: descriptor.name
+        )
         return TensorRTDeviceOutputTensor(
             name: descriptor.name,
             address: UInt(bitPattern: address),
@@ -519,6 +537,50 @@ public actor TensorRTEngine {
             owner: owner,
             lease: lease
         )
+    }
+
+    private func validateOutputShape(
+        _ shape: [Int],
+        engineTensorName: String
+    ) throws(TensorRTEngineError) {
+        guard
+            let stage = artifact.artifact.semanticModel.stage(
+                identifiedBy: artifact.stageID
+            ),
+            let binding = artifact.outputBindings.first(
+                where: {
+                    $0.engineTensorName == engineTensorName
+                }
+            ),
+            let semanticOutput = stage.output(
+                identifiedBy: binding.semanticTensorID
+            ),
+            semanticOutput.shape.count == shape.count
+        else {
+            throw .incompatibleArtifact(
+                .missingTensor(engineTensorName)
+            )
+        }
+        for (dimension, contract) in zip(
+            shape,
+            semanticOutput.shape
+        ) {
+            switch contract {
+            case .fixed(let expected):
+                guard dimension == expected else {
+                    throw .invalidOutputCapacity(
+                        engineTensorName
+                    )
+                }
+            case .batch(let maximum),
+                .variable(let maximum):
+                guard dimension <= maximum else {
+                    throw .invalidOutputCapacity(
+                        engineTensorName
+                    )
+                }
+            }
+        }
     }
 
     private static func inspectedTensors(

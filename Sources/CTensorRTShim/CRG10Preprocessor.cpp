@@ -1699,6 +1699,30 @@ OVTRTStatus ovtrt_rg10_preprocessor_output(
 #endif
 }
 
+OVTRTStatus ovtrt_rg10_preprocessor_source(
+    OVTRTRG10Preprocessor *preprocessor,
+    OVTRTRG10SourceView *source
+) {
+    if (preprocessor == nullptr || source == nullptr) {
+        return OVTRTStatusInvalidArgument;
+    }
+    std::memset(source, 0, sizeof(*source));
+#if OVTRT_HAS_RG10_PREPROCESSING
+    if (preprocessor->inFlight) {
+        return OVTRTStatusResourceBusy;
+    }
+    source->deviceAddress = preprocessor->deviceInput;
+    source->byteCount = preprocessor->configuration.sourceByteCount;
+    source->width = preprocessor->configuration.sourceWidth;
+    source->height = preprocessor->configuration.sourceHeight;
+    source->bytesPerRow =
+        preprocessor->configuration.sourceBytesPerRow;
+    return OVTRTStatusSuccess;
+#else
+    return OVTRTStatusUnavailable;
+#endif
+}
+
 OVTRTStatus ovtrt_rg10_preprocessor_copy_output(
     OVTRTRG10Preprocessor *preprocessor,
     float *destination,

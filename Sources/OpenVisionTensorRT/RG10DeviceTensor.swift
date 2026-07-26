@@ -22,11 +22,17 @@ public final class RG10DeviceTensor:
     public let channelOrder: VisionTensorChannelOrder
 
     private let address: UInt
+    private let sourceAddress: UInt
+    private let sourceByteCount: UInt64
+    private let sourceWidth: UInt32
+    private let sourceHeight: UInt32
+    private let sourceBytesPerRow: UInt32
     private let owner: RG10PreprocessorHandleOwner
     private let lease: RG10TensorLeaseState
 
     init(
         descriptor: OVTRTDeviceTensorView,
+        sourceDescriptor: OVTRTRG10SourceView,
         owner: RG10PreprocessorHandleOwner,
         lease: RG10TensorLeaseState
     ) throws(RG10PreprocessorError) {
@@ -40,7 +46,22 @@ public final class RG10DeviceTensor:
         else {
             throw .invalidTensorDescriptor
         }
+        guard
+            let sourceDeviceAddress =
+                sourceDescriptor.deviceAddress,
+            sourceDescriptor.byteCount > 0,
+            sourceDescriptor.width > 0,
+            sourceDescriptor.height > 0,
+            sourceDescriptor.bytesPerRow > 0
+        else {
+            throw .invalidTensorDescriptor
+        }
         address = UInt(bitPattern: deviceAddress)
+        sourceAddress = UInt(bitPattern: sourceDeviceAddress)
+        sourceByteCount = sourceDescriptor.byteCount
+        sourceWidth = sourceDescriptor.width
+        sourceHeight = sourceDescriptor.height
+        sourceBytesPerRow = sourceDescriptor.bytesPerRow
         self.byteCount = byteCount
         self.elementCount = elementCount
         width = Int(descriptor.width)
@@ -88,6 +109,24 @@ public final class RG10DeviceTensor:
             throw .released
         } catch {
             throw .inaccessible
+        }
+    }
+
+    func withRG10SourceDeviceView<Result>(
+        _ body: (OVTRTRG10SourceView) throws -> Result
+    ) throws -> Result {
+        _ = owner
+        return try lease.withBorrow {
+            try body(
+                OVTRTRG10SourceView(
+                    deviceAddress:
+                        UnsafeRawPointer(bitPattern: sourceAddress),
+                    byteCount: sourceByteCount,
+                    width: sourceWidth,
+                    height: sourceHeight,
+                    bytesPerRow: sourceBytesPerRow
+                )
+            )
         }
     }
 }

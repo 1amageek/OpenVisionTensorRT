@@ -25,6 +25,22 @@ struct TensorRTRuntimeContractTests {
         #endif
     }
 
+    @Test("Output execution capacity must be positive")
+    func invalidOutputExecutionCapacity() {
+        #expect(
+            throws:
+                TensorRTStageEngineArtifactError
+                    .invalidExecutionElementCapacity(0)
+        ) {
+            _ = try TensorRTEngineOutputBinding(
+                semanticTensorID:
+                    RTMDetDWPoseBodyPoseManifest.detectionsTensor,
+                engineTensorName: "dets",
+                executionElementCapacity: 0
+            )
+        }
+    }
+
     @Test("Transfer configuration rejects an empty frame")
     func emptyTransferFrame() {
         #expect(

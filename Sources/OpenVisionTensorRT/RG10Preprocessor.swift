@@ -177,9 +177,22 @@ public actor RG10Preprocessor {
         guard outputStatus == .available else {
             throw .failed(status: outputStatus, report: report)
         }
+        var sourceDescriptor = OVTRTRG10SourceView()
+        let sourceStatus = owner.withHandle { handle in
+            TensorRTRuntimeStatus(
+                ovtrt_rg10_preprocessor_source(
+                    handle,
+                    &sourceDescriptor
+                )
+            )
+        } ?? .resourceBusy
+        guard sourceStatus == .available else {
+            throw .failed(status: sourceStatus, report: report)
+        }
         let lease = RG10TensorLeaseState()
         let tensor = try RG10DeviceTensor(
             descriptor: descriptor,
+            sourceDescriptor: sourceDescriptor,
             owner: owner,
             lease: lease
         )

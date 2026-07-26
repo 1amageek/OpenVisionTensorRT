@@ -10,6 +10,7 @@ public enum TensorRTStageEngineArtifactError:
     case emptyInputTensorName
     case emptySemanticTensorID
     case emptyEngineTensorName
+    case invalidExecutionElementCapacity(Int)
     case duplicateSemanticTensorID(VisionModelTensorID)
     case duplicateEngineTensorName(String)
     case inputOutputNameCollision(String)

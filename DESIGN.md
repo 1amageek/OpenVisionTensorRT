@@ -44,13 +44,28 @@ plan file
 Plan bytes are not copied into `Data`, `Array`, or another frame-sized Swift
 container.
 
+### Semantic bounds and execution capacity
+
+TensorRT's dynamic output allocator may request storage for an internal graph
+bound that is larger than the final model output. RTMDet's exported graph has
+2,100 candidates before its final top-k, while the semantic contract accepts at
+most 100 detections. `TensorRTEngineOutputBinding.executionElementCapacity`
+therefore records the artifact-specific allocation bound separately from the
+semantic tensor shape. The provider requires capacities of 10,500 `Float`
+elements for `dets` and 2,100 `Int64` elements for `labels`.
+
+An absent, zero, or insufficient execution capacity is a typed configuration
+failure. TensorRT may write only within the persistent artifact capacity, and
+the final runtime shape must still satisfy the semantic maximum. Execution
+capacity never enlarges the meaning accepted by OpenVision.
+
 ## TensorRT execution owner
 
 `TensorRTEngine.prepareExecution()` creates one TensorRT execution context,
 non-blocking CUDA stream, and timing-event pair. It derives maximum output
-capacities from the already validated semantic manifest, allocates each output
-once, and installs a fixed TensorRT output allocator. An actual runtime shape
-that exceeds its declared semantic bound fails with
+capacities from the validated artifact binding, allocates each output once, and
+installs a fixed TensorRT output allocator. An actual runtime shape that exceeds
+its declared semantic bound fails with
 `outputCapacityExceeded`; it never falls back to an enqueue-time allocation.
 
 `TensorRTEngine.execute(_:)` borrows an existing CUDA input address and binds it
@@ -111,10 +126,39 @@ per-Bayer-site black levels and gains, a 3x3 color transform, optional sRGB
 transfer, and independent red/green/blue affine normalization. Unsupported
 hosts return typed unavailable evidence; no CPU fallback is selected.
 
-`regionAffine` is intentionally rejected by this full-frame preprocessor. The
-DWPose stage requires a detector-derived, aspect-preserving affine ROI and is
-not equivalent to any full-frame resize mode. Its dedicated GPU implementation
-belongs to the TensorRT execution milestone.
+`regionAffine` remains intentionally rejected by the full-frame preprocessor.
+The dedicated `TensorRTPosePipeline` receives detector outputs and the original
+RG10 device source, selects at most four confidence-sorted person regions on
+the GPU, applies the DWPose aspect and 1.25 scale rules, and writes batched
+256x192 NCHW pose input directly into persistent device storage. No RGB frame,
+crop image, or host-side pose tensor is materialized.
+
+## Implemented pose and observation path
+
+```text
+RTMDet device outputs
+    + original RG10 device source
+        -> CUDA person ROI selection
+            -> compact count + regions D2H (84-byte maximum)
+            -> CUDA RG10 region affine
+                -> persistent DWPose input
+                    -> TensorRT DWPose
+                        -> CUDA SimCC argmax/coordinate decode
+                            -> compact joints D2H (6,384-byte maximum)
+                                -> OpenVision observations
+```
+
+The pose actor admits one prepared frame at a time. Detector output leases and
+the RG10 source owner remain alive until ROI selection and region affine have
+synchronized. A pose-input lease then prevents overwrite until TensorRT has
+finished consuming the prepared batch. SimCC output leases remain active until
+the decode kernel and compact readback complete.
+
+Region and joint readback arrays are allocated once with the pose pipeline.
+Each frame writes only the selected prefix. New arrays are created only at the
+OpenVision output boundary because observations must own values after the
+provider execution returns. Pointer borrows are synchronous, scoped to their
+owner, and never cross an actor suspension point.
 
 ## Semantic model manifest
 
@@ -176,7 +220,7 @@ The first production pipeline has the following measurable budget:
 | Frame-sized allocation after warm-up | 0 |
 | In-flight inference | 1, with explicit busy failure |
 | Sustained input rate | 1920x1080 RG10 at 30 FPS |
-| End-to-end inference latency | p95 below 33.3 ms |
+| Fixture end-to-end inference latency | p95 below 33.3 ms |
 
 The source lease may be released only after the synchronous H2D transfer or an
 equivalent target-specific fence proves that GPU work no longer reads host
@@ -207,13 +251,26 @@ advertised until its owner and fence contract is proven on the real camera.
 The deployment fault-injected one cleanup synchronization failure, verified
 that the opaque owner remained non-null, then retried destruction successfully.
 
-Three final-code detector runs each used 10 warm-up and 100 measured
-submissions. TensorRT GPU inference measured 2.533344–2.569632 ms p50 and
-2.574208–2.859296 ms p95. The two dynamic outputs retain 2,800 device bytes,
-reuse identical addresses, and require zero explicit per-frame device
-allocations. Combined with the measured RG10 preprocessing, the verified
-detector slice remained below 3.6 ms at the worst observed p95 before detector
-decoding.
+The final detector run used 10 warm-up and 100 measured submissions. TensorRT
+GPU inference measured 2.550144 ms p50 and 2.595040 ms p95. Its two dynamic
+outputs retain 58,800 device bytes for the graph's 2,100-candidate execution
+bound, reuse identical addresses, and require zero explicit per-frame device
+allocations.
+
+One prepared provider session completed 5 warm-up and 30 measured fixture
+executions with stable observation counts. End-to-end latency measured
+11.659648 ms p50 and 11.748704 ms p95, below the 33.3 ms fixture budget. At the
+maximum batch of four, the package-owned persistent device allocations total
+9,707,444 bytes (about 9.26 MiB): RG10 source, detector input and outputs, pose
+input and decode storage. TensorRT-owned execution workspace is not included
+in that number and must be measured separately during sustained camera
+operation.
+
+The maximum per-frame D2H payload is 6,468 bytes across three compact copies:
+a 4-byte region count, 80 bytes of regions, and 6,384 bytes of decoded joint
+tuples. No image or inference tensor crosses D2H. The current host RG10 input
+requires exactly one full-frame H2D. A future DMA-BUF path may remove it only
+after external-memory ownership and camera release fences are proven.
 
 ## Shared-state review matrix
 
@@ -224,6 +281,9 @@ decoding.
 | Deferred failed cleanup | `Mutex<[Entry]>` registry | same mutex contract | same mutex contract | entries are removed under lock and cleanup is attempted outside the critical section | failed owners remain retained and are retried before a new preprocessor is created |
 | TensorRT engine owner | `TensorRTEngine` actor plus `Mutex<UInt?>` opaque-handle owner | same actor and mutex contract; runtime returns typed unavailable | same actor and mutex contract; runtime returns typed unavailable | actor serializes inspection and shutdown; the mutex protects exactly-once address consumption | engine precedes runtime, and both precede dynamic-library close |
 | TensorRT output lease | `Mutex<State>` holder and borrow counts | same mutex contract | same mutex contract | a synchronous scoped borrow prevents release; every output holder retains the same lease | another enqueue and shutdown reject an unreleased output; the last holder closes the lease |
+| Pose pipeline state and readback storage | `TensorRTPosePipeline` actor plus `Mutex<UInt?>` opaque-handle owner | same actor and mutex contract; runtime returns typed unavailable | same actor and mutex contract; runtime returns typed unavailable | actor serializes prepare/decode/discard; persistent region and joint arrays are synchronously borrowed without suspension | shutdown rejects a pending decode or live pose-input lease and consumes the C owner exactly once |
+| Pose input lease | `Mutex<State>` | same mutex contract | same mutex contract | TensorRT receives a scoped device-address borrow; release cannot overlap the borrow | a new pose preparation and pipeline shutdown reject an unreleased input |
+| Provider session state | `OpenVisionTensorRTProviderSession` actor | same actor contract | same actor contract | actor serializes preparation, one in-flight request, cancellation, cleanup, and shutdown | cleanup attempts every owned intermediate and reports the first typed failure; shutdown visits every backend owner |
 | CUDA work state | C owner, serialized by the Swift actor | unavailable typed boundary | unavailable typed boundary | submit/wait/destroy state machine | stream sync precedes source unregister, module unload, buffer/event/stream destruction |
 
 There is no `hasFeature(Embedded)` or `canImport(Synchronization)` branch in
@@ -241,7 +301,8 @@ It also deserialized the exact RTMDet and DWPose plans through the public Swift
 loader and validated every declared tensor and dynamic pose batch profile.
 Wrong-checksum and swapped-semantic-binding probes failed at their expected
 typed boundaries. Independent `trtexec` runs prove that both plans execute on
-this GPU. The public Swift path additionally sustained 110 detector submissions
-with stable output addresses and zero explicit per-frame device allocations.
-Detector decoding, region-affine pose input, semantic observation decoding, and
-the real camera lease remain separate milestones.
+this GPU. The public provider completed detector decoding, region-affine pose
+input, DWPose execution, SimCC decoding, and OpenVision observation
+construction, then sustained 30 measured executions on one session with stable
+counts. The real camera lease and sustained capture remain the next milestone;
+fixture success is not presented as camera evidence.

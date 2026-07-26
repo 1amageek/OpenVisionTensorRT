@@ -21,15 +21,19 @@ The current implementation owns:
 - typed runtime, compute-capability, tensor-name, type, shape, and profile
   compatibility validation;
 - reusable TensorRT execution contexts, CUDA streams, timing events, and
-  manifest-bounded output allocations;
+  artifact-bounded execution allocations with semantic output validation;
 - completion-fenced detector output leases with stable device addresses and no
-  explicit per-frame device allocation.
+  explicit per-frame device allocation;
+- GPU person-region selection and fused RG10 region-affine pose input;
+- batched DWPose execution and GPU SimCC decoding;
+- compact observation-only readback into OpenVision body and hand observations;
+- a production `VisionProvider` with typed lifecycle and cancellation failures.
 
-The public Swift path now executes the detector engine on Jetson. Successful
-body or hand pose inference is not implemented until detector decoding, GPU
-region-affine preprocessing, DWPose execution, SimCC decoding, and the provider
-execution path are verified. The package does not report an alternate CPU
-provider.
+The public Swift path executes the complete model pipeline on Jetson and
+returns body and hand pose observations. The verified input is a real
+1920x1080 RG10 fixture using the same `VisionImageInput` and ownership contract
+as camera capture. Actual camera leasing and sustained capture remain separate
+integration evidence. The package does not report an alternate CPU provider.
 
 ```text
 VisionImageInput (RG10)
@@ -38,9 +42,11 @@ VisionImageInput (RG10)
             -> RTMDet input tensor
                 -> TensorRT detector execution (verified)
                     -> reusable device outputs (verified)
-                    -> bounded person regions (next phase)
-                    -> DWPose region-affine tensor (next phase)
-                        -> DWPose execution/provider (next phase)
+                    -> bounded person regions (GPU)
+                    -> DWPose region-affine tensor (GPU)
+                        -> DWPose execution (GPU)
+                            -> SimCC decode (GPU)
+                                -> compact observations (host)
 ```
 
 The standalone transfer probe uses a 1920x1080 frame stored in a 16-bit raw
@@ -79,11 +85,19 @@ Negative Jetson probes also proved that a wrong digest fails at the typed
 `checksum` stage and swapped semantic output bindings fail with a typed element
 type incompatibility. Neither condition falls back to another engine.
 
-The final detector execution path was measured three times with 10 warm-up and
-100 measured submissions. GPU inference p50 was 2.533344–2.569632 ms and p95
-was 2.574208–2.859296 ms. The two dynamic detector outputs retain 2,800 device
-bytes, reuse identical device addresses, and perform zero explicit per-frame
-device allocations after preparation.
+The final detector execution path measured 2.550144 ms p50 and 2.595040 ms p95
+over 100 measured submissions after 10 warm-up iterations. The dynamic detector
+allocator reserves 58,800 device bytes for the graph's 2,100 pre-top-k
+candidates while still validating the final semantic result at 100 detections.
+Output addresses remain stable and no explicit per-frame device allocation is
+performed after preparation.
+
+One prepared provider session then completed 5 warm-up and 30 measured complete
+executions with stable observation counts. End-to-end latency measured
+11.659648 ms p50 and 11.748704 ms p95. The fixture produced four observations
+containing 74 body and 138 hand joints. No image or TensorRT tensor is copied
+back to the host; the four-person bound reads back 6,468 bytes of count, region,
+and joint tuples before constructing the owned OpenVision result values.
 
 Build and run the exact runtime boundary on a configured Wendy Jetson:
 

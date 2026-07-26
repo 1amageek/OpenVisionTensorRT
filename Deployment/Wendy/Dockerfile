@@ -60,6 +60,7 @@ ENV PATH="/opt/swift/usr/bin:${PATH}"
 COPY .build-context/CTensorRTShim.cpp ./CTensorRTShim.cpp
 COPY .build-context/CRG10Preprocessor.cpp ./CRG10Preprocessor.cpp
 COPY .build-context/CTensorRTEngine.cpp ./CTensorRTEngine.cpp
+COPY .build-context/CPosePipeline.cpp ./CPosePipeline.cpp
 COPY .build-context/CTensorRTShim.h ./CTensorRTShim.h
 COPY Probe.cpp ./Probe.cpp
 COPY .build-context/Package.swift ./swift-source/Package.swift
@@ -90,6 +91,7 @@ RUN g++ \
         CTensorRTShim.cpp \
         CRG10Preprocessor.cpp \
         CTensorRTEngine.cpp \
+        CPosePipeline.cpp \
         Probe.cpp \
         -ldl \
         -o openvision-tensorrt-runtime-probe
@@ -110,6 +112,7 @@ RUN g++ \
         CTensorRTShim.cpp \
         CRG10Preprocessor.cpp \
         CTensorRTEngine.cpp \
+        CPosePipeline.cpp \
         Probe.cpp \
         -ldl \
         -o openvision-tensorrt-runtime-probe-sanitized
@@ -156,6 +159,7 @@ COPY --from=builder \
     /build/swift-source/.build/release/openvision-tensorrt-engine-probe \
     /usr/local/bin/openvision-tensorrt-engine-probe
 COPY .build-context/Models /opt/openvision/models
+COPY .build-context/Fixtures /opt/openvision/fixtures
 COPY --from=builder \
     /usr/local/cuda-13.2/targets/sbsa-linux/lib/libnvrtc.so* \
     /usr/local/lib/

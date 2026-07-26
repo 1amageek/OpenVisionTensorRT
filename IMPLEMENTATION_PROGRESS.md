@@ -52,26 +52,37 @@
 - [x] Output-address reuse across warm-up and 100 measured submissions
 - [x] Typed output-capacity, execution-stage, borrow, and cleanup failures
 - [x] Retryable explicit execution-resource cleanup
+- [x] GPU detector decode with bounded confidence-sorted person ROI selection
+- [x] Fused RG10-to-pose region-affine CUDA preprocessing
+- [x] Batched DWPose execution through the public Swift path
+- [x] SimCC GPU decode with compact region and joint readback
+- [x] Complete body and bilateral-hand OpenVision observation construction
+- [x] Production `VisionProvider` and `VisionProviderSession` conformance
+- [x] Typed cancellation, busy, release, discard, and shutdown paths
+- [x] Persistent GPU allocations and bounded host readback storage
+- [x] Sustained provider execution on Jetson with stable observation counts
 
 ## Incomplete production work
 
-- [ ] Implement detector decode, bounded ROI selection, and GPU region affine.
-- [ ] Execute DWPose through the Swift path after GPU region-affine preparation.
-- [ ] Implement SimCC GPU decode and compact observation readback.
-- [ ] Conform the production provider to `VisionProvider`.
 - [ ] Run the public provider with a real camera frame lease.
 - [ ] Measure sustained 1920x1080 RG10 at 30 FPS on Jetson.
 - [ ] Prove a DMA-BUF/external-memory import before advertising direct import.
+- [ ] Evaluate ceiling-view pose accuracy and false positives with captured
+      product-domain data.
+- [ ] Complete the checkpoint and training-dataset license review.
 
-No callable pose provider is declared yet, so no incomplete inference branch can
-be mistaken for successful production execution.
+The first launch immediately after the final image transfer reported one typed
+detector `outputAllocation` failure. The same immutable image then passed a
+manual full-probe run and a subsequent cold-start full-probe run. Treat a
+recurrence as a release-blocking reliability defect; do not convert it into an
+automatic or silent fallback.
 
 ## Verification evidence
 
 | Check | Current evidence |
 |---|---|
-| macOS unavailable, configuration, lifecycle, semantic manifest, engine-binding, and output-lease behavior | 23 tests passed with `xcodebuild test` |
-| macOS sanitizer behavior | The same 23 tests passed with Address Sanitizer and Thread Sanitizer |
+| macOS unavailable, configuration, lifecycle, semantic manifest, engine-binding, output-capacity, provider, decoder, and lease behavior | 29 tests in three suites passed with `xcodebuild test` |
+| macOS sanitizer behavior | The same 29 tests passed independently with Address Sanitizer and Thread Sanitizer |
 | Regular WASM | Debug and release `OpenVisionTensorRT` target builds passed with `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a` toolchain and matching SDK |
 | Embedded WASM | Debug and release `OpenVisionTensorRT` target builds passed with the same 2026-07-17 toolchain and Embedded SDK |
 | Exact snapshot identity | Swift `9517428e7f4b63e`, LLVM `3704913b9103f85`, target `wasm32-unknown-wasip1` |
@@ -93,10 +104,13 @@ be mistaken for successful production execution.
 | Independent engine execution | `trtexec` executed both plans on the Jetson GPU: detector batch 1 p50 3.46277 ms; pose batch 1 p50 2.33325 ms; pose batch 4 p50 5.73291 ms |
 | Swift engine acceptance | Both plans passed mmap SHA-256, deserialization, exact runtime/device compatibility, tensor name/mode/type/shape, and pose profile validation |
 | Typed Jetson failures | Wrong SHA-256 produced `engineChecksumMismatch` at `checksum`; swapped detector output meanings produced `incompatibleArtifact` for `labels` element type |
-| Swift detector execution | Three final-code runs used 10 warm-up and 100 measured submissions each. GPU inference p50 was 2.533344–2.569632 ms and p95 was 2.574208–2.859296 ms |
-| Detector execution memory | The two dynamic detector outputs use 2,800 persistent device bytes; output addresses remained identical and the package performed zero explicit per-frame device allocations across 110 submissions |
-| Current complete GPU slice | `VisionImageInput` borrow -> one RG10 H2D -> fused CUDA preprocessing -> device-tensor lease -> TensorRT detector enqueue -> completion-fenced reusable device outputs |
-| Remaining inference path | Detector decode, GPU ROI affine, DWPose Swift execution, SimCC decode, observation construction, and the OpenVision provider are not implemented yet |
+| Swift detector execution | The final cold-start probe used 10 warm-up and 100 measured detector submissions. GPU inference measured p50 2.550144 ms and p95 2.595040 ms |
+| Detector execution memory | The dynamic detector allocator reserves the graph-required 2,100 candidates separately from the semantic maximum of 100 detections: 58,800 persistent device bytes, stable output addresses, and zero explicit per-frame device allocations |
+| Complete fixture provider path | A real 1920x1080 RG10 fixture passed `VisionImageInput` borrow -> one H2D -> RTMDet -> bounded ROI -> RG10 region affine -> DWPose -> SimCC decode -> four `HumanBodyPoseObservation` values containing 74 body and 138 hand joints |
+| Sustained provider path | One prepared provider session completed 5 warm-up and 30 measured executions with stable observation counts; end-to-end p50 11.659648 ms and p95 11.748704 ms |
+| Compact readback | No image or tensor is copied back to the host. At the four-person bound, only one 4-byte count, 80 bytes of regions, and 6,384 bytes of joint tuples cross D2H |
+| Current complete GPU slice | `VisionImageInput` borrow -> one RG10 H2D -> fused CUDA detector preprocessing -> RTMDet -> GPU ROI affine -> DWPose -> GPU SimCC decode -> compact D2H -> OpenVision observations |
+| Remaining integration path | Actual camera lease and storage negotiation, then sustained 30 FPS capture. DMA-BUF direct import is a separate capability and is not advertised |
 
 ## Release gates beyond implementation
 
