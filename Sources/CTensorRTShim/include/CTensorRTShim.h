@@ -19,7 +19,10 @@ typedef enum OVTRTStatus {
     OVTRTStatusPreprocessingFailure = 7,
     OVTRTStatusNVRTCFailure = 8,
     OVTRTStatusCUDADriverFailure = 9,
-    OVTRTStatusResourceBusy = 10
+    OVTRTStatusResourceBusy = 10,
+    OVTRTStatusEngineArtifactFailure = 11,
+    OVTRTStatusEngineChecksumMismatch = 12,
+    OVTRTStatusEngineDeserializationFailure = 13
 } OVTRTStatus;
 
 typedef struct OVTRTProbeResult {
@@ -31,6 +34,67 @@ typedef struct OVTRTProbeResult {
 
 typedef struct OVTRTRuntime OVTRTRuntime;
 typedef struct OVTRTRG10Preprocessor OVTRTRG10Preprocessor;
+typedef struct OVTRTEngine OVTRTEngine;
+
+typedef enum OVTRTEngineLoadStage {
+    OVTRTEngineLoadStageNone = 0,
+    OVTRTEngineLoadStageConfiguration = 1,
+    OVTRTEngineLoadStageLibraryOpen = 2,
+    OVTRTEngineLoadStageSymbolLoad = 3,
+    OVTRTEngineLoadStageFileOpen = 4,
+    OVTRTEngineLoadStageFileStat = 5,
+    OVTRTEngineLoadStageFileMapping = 6,
+    OVTRTEngineLoadStageChecksum = 7,
+    OVTRTEngineLoadStageRuntimeCreation = 8,
+    OVTRTEngineLoadStageDeserialization = 9,
+    OVTRTEngineLoadStageTensorInspection = 10
+} OVTRTEngineLoadStage;
+
+typedef enum OVTRTTensorIOMode {
+    OVTRTTensorIOModeInput = 0,
+    OVTRTTensorIOModeOutput = 1,
+    OVTRTTensorIOModeUnknown = 2
+} OVTRTTensorIOMode;
+
+typedef enum OVTRTTensorElementType {
+    OVTRTTensorElementTypeFloat32 = 0,
+    OVTRTTensorElementTypeFloat16 = 1,
+    OVTRTTensorElementTypeInt8 = 2,
+    OVTRTTensorElementTypeInt32 = 3,
+    OVTRTTensorElementTypeBool = 4,
+    OVTRTTensorElementTypeUInt8 = 5,
+    OVTRTTensorElementTypeFP8 = 6,
+    OVTRTTensorElementTypeBF16 = 7,
+    OVTRTTensorElementTypeInt64 = 8,
+    OVTRTTensorElementTypeInt4 = 9,
+    OVTRTTensorElementTypeFP4 = 10,
+    OVTRTTensorElementTypeUnknown = 255
+} OVTRTTensorElementType;
+
+typedef enum OVTRTShapeSelector {
+    OVTRTShapeSelectorDeclared = 0,
+    OVTRTShapeSelectorMinimum = 1,
+    OVTRTShapeSelectorOptimum = 2,
+    OVTRTShapeSelectorMaximum = 3
+} OVTRTShapeSelector;
+
+typedef struct OVTRTEngineLoadResult {
+    int32_t tensorRTVersion;
+    int32_t cudaRuntimeVersion;
+    int32_t computeCapabilityMajor;
+    int32_t computeCapabilityMinor;
+    int32_t systemErrorCode;
+    OVTRTEngineLoadStage failureStage;
+    uint32_t ioTensorCount;
+    uint64_t artifactByteCount;
+    uint8_t checksumVerified;
+} OVTRTEngineLoadResult;
+
+typedef struct OVTRTEngineTensorInfo {
+    OVTRTTensorIOMode ioMode;
+    OVTRTTensorElementType elementType;
+    int32_t rank;
+} OVTRTEngineTensorInfo;
 
 typedef enum OVTRTCUDATransferStage {
     OVTRTCUDATransferStageNone = 0,
@@ -281,6 +345,37 @@ OVTRTStatus ovtrt_rg10_preprocessor_test_fail_next_cleanup_synchronization(
 OVTRTStatus ovtrt_runtime_create(OVTRTRuntime **runtime);
 
 void ovtrt_runtime_destroy(OVTRTRuntime *runtime);
+
+OVTRTStatus ovtrt_engine_create(
+    char const *path,
+    char const *expectedChecksum,
+    OVTRTEngine **engine,
+    OVTRTEngineLoadResult *result
+);
+
+OVTRTStatus ovtrt_engine_tensor_name(
+    OVTRTEngine *engine,
+    uint32_t index,
+    char *destination,
+    uint32_t destinationCapacity,
+    uint32_t *requiredCapacity
+);
+
+OVTRTStatus ovtrt_engine_tensor_info(
+    OVTRTEngine *engine,
+    uint32_t index,
+    OVTRTEngineTensorInfo *info
+);
+
+OVTRTStatus ovtrt_engine_tensor_dimension(
+    OVTRTEngine *engine,
+    uint32_t index,
+    uint32_t axis,
+    OVTRTShapeSelector selector,
+    int64_t *dimension
+);
+
+void ovtrt_engine_destroy(OVTRTEngine *engine);
 
 #ifdef __cplusplus
 }

@@ -16,21 +16,25 @@ The current implementation owns:
 - a completion-fenced device tensor lease exposed through a scoped Swift API;
 - retryable cleanup that retains CUDA owners after destruction failure;
 - a validated RTMDet-nano plus DWPose-m semantic model manifest;
-- semantic-model versus TensorRT-engine artifact metadata.
+- semantic-model versus TensorRT-engine artifact metadata;
+- memory-mapped, SHA-256-verified TensorRT plan deserialization;
+- typed runtime, compute-capability, tensor-name, type, shape, and profile
+  compatibility validation.
 
-The semantic model has been selected for bring-up, but successful body or hand
-pose inference is not implemented until matching TensorRT engines and the
-provider execution path are verified. The package does not report an alternate
-CPU provider.
+Matching detector and pose engines are now accepted by the public Swift loader
+on Jetson. Successful body or hand pose inference is not implemented until the
+reusable execution context, GPU decoding, and provider execution path are
+verified. The package does not report an alternate CPU provider.
 
 ```text
 VisionImageInput (RG10)
     -> RG10Preprocessor
         -> one H2D + fused CUDA kernel
             -> RTMDet input tensor
-                -> bounded person regions
+                -> TensorRT engine (deserialization verified)
+                    -> bounded person regions (next phase)
                     -> DWPose region-affine tensor (next phase)
-                        -> TensorRT provider (next phase)
+                        -> TensorRT execution/provider (next phase)
 ```
 
 The standalone transfer probe uses a 1920x1080 frame stored in a 16-bit raw
@@ -56,6 +60,18 @@ plus an independent RGGB golden fixture, matched the CPU reference within
 address, input release, tensor release, and shutdown.
 The Jetson probe also fault-injected a cleanup synchronization failure and
 proved that a second destruction attempt consumes the retained owner.
+
+The same Swift deployment accepted the exact Jetson plans below after
+memory-mapped SHA-256 verification and TensorRT deserialization:
+
+| Stage | Plan SHA-256 | Verified tensors |
+|---|---|---|
+| RTMDet | `be0b54389dd01b4b571a06623978032f6d2e20a125872670ce7233bf22204775` | `input [1,3,320,320]`, `dets [1,-1,5]`, `labels [1,-1]` |
+| DWPose | `32d56cc71e84c9d6fbde29cd782c0b6e3fcfcd80b67e2717f0bab42c212ba674` | `input [1...4,3,256,192]`, `simcc_x [B,133,384]`, `simcc_y [B,133,512]` |
+
+Negative Jetson probes also proved that a wrong digest fails at the typed
+`checksum` stage and swapped semantic output bindings fail with a typed element
+type incompatibility. Neither condition falls back to another engine.
 
 Build and run the exact runtime boundary on a configured Wendy Jetson:
 

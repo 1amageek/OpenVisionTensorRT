@@ -2,6 +2,8 @@ FROM nvidia/cuda:13.2.0-base-ubuntu24.04@sha256:faef2047f4f69e613ea985d4d01575b2
 
 ARG TENSORRT_ARCHIVE_SHA256=239bee69b7e8257b6add47f631c95a9e91cc07e0861365e9aa3f66a08bb166ae
 ARG SWIFT_SNAPSHOT=swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a
+ARG DETECTOR_PLAN_SHA256=be0b54389dd01b4b571a06623978032f6d2e20a125872670ce7233bf22204775
+ARG POSE_PLAN_SHA256=32d56cc71e84c9d6fbde29cd782c0b6e3fcfcd80b67e2717f0bab42c212ba674
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes \
@@ -54,6 +56,7 @@ ENV PATH="/opt/swift/usr/bin:${PATH}"
 
 COPY .build-context/CTensorRTShim.cpp ./CTensorRTShim.cpp
 COPY .build-context/CRG10Preprocessor.cpp ./CRG10Preprocessor.cpp
+COPY .build-context/CTensorRTEngine.cpp ./CTensorRTEngine.cpp
 COPY .build-context/CTensorRTShim.h ./CTensorRTShim.h
 COPY Probe.cpp ./Probe.cpp
 COPY .build-context/Package.swift ./swift-source/Package.swift
@@ -62,6 +65,7 @@ COPY .build-context/Sources/CTensorRTShim ./swift-source/Sources/CTensorRTShim
 COPY .build-context/Sources/OpenVisionTensorRT ./swift-source/Sources/OpenVisionTensorRT
 COPY .build-context/Sources/OpenVisionTensorRTRuntimeProbe ./swift-source/Sources/OpenVisionTensorRTRuntimeProbe
 COPY .build-context/Sources/OpenVisionTensorRTSwiftProbe ./swift-source/Sources/OpenVisionTensorRTSwiftProbe
+COPY .build-context/Sources/OpenVisionTensorRTEngineProbe ./swift-source/Sources/OpenVisionTensorRTEngineProbe
 COPY .build-context/Tests/OpenVisionTensorRTTests ./swift-source/Tests/OpenVisionTensorRTTests
 
 RUN find /build/swift-source \
@@ -82,6 +86,7 @@ RUN g++ \
         -I . \
         CTensorRTShim.cpp \
         CRG10Preprocessor.cpp \
+        CTensorRTEngine.cpp \
         Probe.cpp \
         -ldl \
         -o openvision-tensorrt-runtime-probe
@@ -101,6 +106,7 @@ RUN g++ \
         -I . \
         CTensorRTShim.cpp \
         CRG10Preprocessor.cpp \
+        CTensorRTEngine.cpp \
         Probe.cpp \
         -ldl \
         -o openvision-tensorrt-runtime-probe-sanitized
@@ -114,7 +120,19 @@ RUN CPLUS_INCLUDE_PATH="/usr/local/cuda-13.2/include:/build/TensorRT-10.16/inclu
         -Xcc -I/build/TensorRT-10.16/include \
         --static-swift-stdlib
 
+RUN CPLUS_INCLUDE_PATH="/usr/local/cuda-13.2/include:/build/TensorRT-10.16/include" \
+    swift build \
+        --package-path /build/swift-source \
+        --configuration release \
+        --product openvision-tensorrt-engine-probe \
+        -Xcc -I/usr/local/cuda-13.2/include \
+        -Xcc -I/build/TensorRT-10.16/include \
+        --static-swift-stdlib
+
 FROM ubuntu:24.04@sha256:7f622ca8766bccb22f04242ecb6f19f770b2f08827dc4b8c707de5e78a6da7ab
+
+ARG DETECTOR_PLAN_SHA256
+ARG POSE_PLAN_SHA256
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes \
@@ -132,6 +150,10 @@ COPY --from=builder \
     /build/swift-source/.build/release/openvision-tensorrt-swift-probe \
     /usr/local/bin/openvision-tensorrt-swift-probe
 COPY --from=builder \
+    /build/swift-source/.build/release/openvision-tensorrt-engine-probe \
+    /usr/local/bin/openvision-tensorrt-engine-probe
+COPY .build-context/Models /opt/openvision/models
+COPY --from=builder \
     /usr/local/cuda-13.2/targets/sbsa-linux/lib/libnvrtc.so* \
     /usr/local/lib/
 COPY --from=builder \
@@ -140,4 +162,9 @@ COPY --from=builder \
 
 RUN ldconfig
 
-ENTRYPOINT ["/bin/sh", "-c", "ASAN_OPTIONS=detect_leaks=0 /usr/local/bin/openvision-tensorrt-runtime-probe-sanitized >/dev/null && C_RESULT=$(/usr/local/bin/openvision-tensorrt-runtime-probe) && SWIFT_RESULT=$(/usr/local/bin/openvision-tensorrt-swift-probe) && printf '{\"cProbe\":%s,\"swiftProbe\":%s}\\n' \"$C_RESULT\" \"$SWIFT_RESULT\""]
+ENV OPENVISION_DETECTOR_PLAN_SHA256="${DETECTOR_PLAN_SHA256}"
+ENV OPENVISION_POSE_PLAN_SHA256="${POSE_PLAN_SHA256}"
+
+COPY RunProbes.sh /usr/local/bin/run-openvision-probes
+
+ENTRYPOINT ["/usr/local/bin/run-openvision-probes"]

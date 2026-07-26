@@ -39,10 +39,15 @@
 - [x] Typed rejection of region-affine input by the full-frame preprocessor
 - [x] Reproducible revision- and digest-pinned RTMDet and pose ONNX export
 - [x] ONNX checker and ONNX Runtime verification for exact tensor contracts
+- [x] Jetson FP16 detector and pose TensorRT plan builds
+- [x] Memory-mapped plan loading with in-process SHA-256 verification
+- [x] Real TensorRT runtime deserialization with exactly-once engine ownership
+- [x] Runtime, CUDA, compute-capability, tensor, shape, and profile validation
+- [x] Swift Jetson engine-load probe for both selected model stages
+- [x] Jetson typed checksum and semantic-binding negative probes
 
 ## Incomplete production work
 
-- [ ] Deserialize and validate a matching TensorRT engine.
 - [ ] Implement detector decode, bounded ROI selection, and GPU region affine.
 - [ ] Implement reusable TensorRT execution contexts and inference workspace.
 - [ ] Implement request execution and observation decoding.
@@ -58,10 +63,11 @@ be mistaken for successful production execution.
 
 | Check | Current evidence |
 |---|---|
-| macOS unavailable, configuration, lifecycle, and semantic manifest behavior | 19 tests passed with `xcodebuild test` |
-| macOS sanitizer behavior | The same 19 tests passed with Address Sanitizer and Thread Sanitizer |
-| Regular WASM | Debug and release `OpenVisionTensorRT` target builds passed with the matching 2026-07-17 SDK |
-| Embedded WASM | Debug and release `OpenVisionTensorRT` target builds passed with the matching 2026-07-17 SDK |
+| macOS unavailable, configuration, lifecycle, semantic manifest, and engine-binding behavior | 21 tests passed with `xcodebuild test` |
+| macOS sanitizer behavior | The same 21 tests passed with Address Sanitizer and Thread Sanitizer |
+| Regular WASM | Debug and release `OpenVisionTensorRT` target builds passed with `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a` toolchain and matching SDK |
+| Embedded WASM | Debug and release `OpenVisionTensorRT` target builds passed with the same 2026-07-17 toolchain and Embedded SDK |
+| Exact snapshot identity | Swift `9517428e7f4b63e`, LLVM `3704913b9103f85`, target `wasm32-unknown-wasip1` |
 | Jetson runtime | TensorRT 10.16.2 and CUDA 13.2 reported one device |
 | Jetson sanitizer behavior | The full runtime and transfer path passed ASan and UBSan; leak detection is unavailable under Wendy device supervision |
 | TensorRT ownership | Real `IRuntime` creation and destruction passed on Jetson |
@@ -76,7 +82,11 @@ be mistaken for successful production execution.
 | Retryable cleanup | Injected stream-synchronization failure retained a non-null owner; second destruction succeeded |
 | Semantic model | RTMDet-nano plus DWPose-m manifest fixes exact preprocessing, bounded runtime-variable detector output shapes, `int64` labels, 61 body/hand mappings, source revisions, and SHA-256 digests |
 | ONNX exchange graphs | Reproducible export produced detector `68f9b14e...` and pose `9597eb65...`; ONNX checker passed and ONNX Runtime produced the declared detector outputs and pose batches one and four |
-| Model inference | Not implemented; no TensorRT engine is accepted yet |
+| TensorRT plans | RTMDet plan `be0b5438...` and DWPose plan `32d56cc7...` built for TensorRT 10.16.2 / CUDA 13.2 / compute capability 8.7 |
+| Independent engine execution | `trtexec` executed both plans on the Jetson GPU: detector batch 1 p50 3.46277 ms; pose batch 1 p50 2.33325 ms; pose batch 4 p50 5.73291 ms |
+| Swift engine acceptance | Both plans passed mmap SHA-256, deserialization, exact runtime/device compatibility, tensor name/mode/type/shape, and pose profile validation |
+| Typed Jetson failures | Wrong SHA-256 produced `engineChecksumMismatch` at `checksum`; swapped detector output meanings produced `incompatibleArtifact` for `labels` element type |
+| Model inference | TensorRT GPU execution is independently proven, but the reusable Swift execution context and OpenVision provider path are not implemented yet |
 
 ## Release gates beyond implementation
 

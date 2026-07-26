@@ -185,6 +185,93 @@ struct TensorRTRuntimeContractTests {
         }
     }
 
+    @Test("Stage artifact maps every semantic output exactly once")
+    func stageArtifactBindingValidation() throws {
+        let artifact = try makeEngineArtifact()
+        let detectionBinding = try TensorRTEngineOutputBinding(
+            semanticTensorID:
+                RTMDetDWPoseBodyPoseManifest.detectionsTensor,
+            engineTensorName: "dets"
+        )
+        let classBinding = try TensorRTEngineOutputBinding(
+            semanticTensorID:
+                RTMDetDWPoseBodyPoseManifest.classesTensor,
+            engineTensorName: "labels"
+        )
+        let stage = try TensorRTStageEngineArtifactDescriptor(
+            artifact: artifact,
+            stageID:
+                RTMDetDWPoseBodyPoseManifest.personDetectionStage,
+            inputTensorName: "input",
+            outputBindings: [detectionBinding, classBinding]
+        )
+
+        #expect(stage.inputTensorName == "input")
+        #expect(stage.outputBindings.count == 2)
+
+        #expect(
+            throws:
+                TensorRTStageEngineArtifactError
+                    .missingSemanticTensorID(
+                        RTMDetDWPoseBodyPoseManifest.classesTensor
+                    )
+        ) {
+            _ = try TensorRTStageEngineArtifactDescriptor(
+                artifact: artifact,
+                stageID:
+                    RTMDetDWPoseBodyPoseManifest
+                        .personDetectionStage,
+                inputTensorName: "input",
+                outputBindings: [detectionBinding]
+            )
+        }
+        let collidingClassBinding =
+            try TensorRTEngineOutputBinding(
+                semanticTensorID:
+                    RTMDetDWPoseBodyPoseManifest.classesTensor,
+                engineTensorName: "dets"
+            )
+        #expect(
+            throws:
+                TensorRTStageEngineArtifactError
+                    .duplicateEngineTensorName("dets")
+        ) {
+            _ = try TensorRTStageEngineArtifactDescriptor(
+                artifact: artifact,
+                stageID:
+                    RTMDetDWPoseBodyPoseManifest
+                        .personDetectionStage,
+                inputTensorName: "input",
+                outputBindings: [
+                    detectionBinding,
+                    collidingClassBinding
+                ]
+            )
+        }
+    }
+
+    @Test("Engine loading is a typed unavailable failure on Mac")
+    func unavailableEngineLoading() throws {
+        #if os(macOS)
+        let stage = try makeDetectorStageArtifact()
+        do {
+            _ = try TensorRTEngine(
+                path: "/tmp/unavailable.plan",
+                artifact: stage
+            )
+            Issue.record("Expected TensorRT engine loading to fail")
+        } catch let error {
+            guard case .unavailable(let report) = error else {
+                Issue.record("Expected typed unavailable evidence")
+                return
+            }
+            #expect(report.failureStage == .libraryOpen)
+            #expect(!report.checksumVerified)
+            #expect(report.artifactByteCount == 0)
+        }
+        #endif
+    }
+
     @Test("RG10 rejects region affine instead of changing semantics")
     func regionAffineRequiresDedicatedPreprocessor() {
         #expect(
@@ -427,6 +514,45 @@ struct TensorRTRuntimeContractTests {
             colorMatrix: .identity,
             normalization: normalization,
             appliesSRGBTransfer: false
+        )
+    }
+
+    private func makeEngineArtifact()
+        throws -> TensorRTEngineArtifactDescriptor
+    {
+        try TensorRTEngineArtifactDescriptor(
+            semanticModel:
+                RTMDetDWPoseBodyPoseManifest.manifest(),
+            checksum: String(repeating: "0", count: 64),
+            tensorRTVersion: 101_602,
+            cudaRuntimeVersion: 13_020,
+            computeCapabilityMajor: 8,
+            computeCapabilityMinor: 7,
+            precision: .float16
+        )
+    }
+
+    private func makeDetectorStageArtifact()
+        throws -> TensorRTStageEngineArtifactDescriptor
+    {
+        try TensorRTStageEngineArtifactDescriptor(
+            artifact: makeEngineArtifact(),
+            stageID:
+                RTMDetDWPoseBodyPoseManifest.personDetectionStage,
+            inputTensorName: "input",
+            outputBindings: [
+                try TensorRTEngineOutputBinding(
+                    semanticTensorID:
+                        RTMDetDWPoseBodyPoseManifest
+                            .detectionsTensor,
+                    engineTensorName: "dets"
+                ),
+                try TensorRTEngineOutputBinding(
+                    semanticTensorID:
+                        RTMDetDWPoseBodyPoseManifest.classesTensor,
+                    engineTensorName: "labels"
+                )
+            ]
         )
     }
 }

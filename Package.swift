@@ -19,6 +19,10 @@ let package = Package(
         .executable(
             name: "openvision-tensorrt-swift-probe",
             targets: ["OpenVisionTensorRTSwiftProbe"]
+        ),
+        .executable(
+            name: "openvision-tensorrt-engine-probe",
+            targets: ["OpenVisionTensorRTEngineProbe"]
         )
     ],
     dependencies: [
@@ -50,6 +54,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "OpenVisionTensorRTSwiftProbe",
+            dependencies: [
+                "OpenVisionTensorRT",
+                "OpenVision"
+            ]
+        ),
+        .executableTarget(
+            name: "OpenVisionTensorRTEngineProbe",
             dependencies: [
                 "OpenVisionTensorRT",
                 "OpenVision"

@@ -1,12 +1,14 @@
 # Wendy TensorRT Runtime Probe
 
 This deployment validates the real `CTensorRTShim` path against the
-CUDA/TensorRT libraries exposed by Wendy's GPU entitlement. It does not contain
-or select a vision model.
+CUDA/TensorRT libraries exposed by Wendy's GPU entitlement. Model plans are
+optional inputs and are never stored in the repository.
 
 Prepare the exact package sources as the Docker build context:
 
 ```bash
+OPENVISION_TRT_DETECTOR_PLAN=/path/to/rtmdet-fp16.plan \
+OPENVISION_TRT_POSE_PLAN=/path/to/dwpose-fp16.plan \
 ./scripts/prepare-wendy-runtime-probe.sh
 ```
 
@@ -23,7 +25,9 @@ wendy run \
 
 Success requires CUDA device enumeration, one real TensorRT runtime
 creation/destruction cycle, the representative frame transfer contract, and
-the fused RG10 preprocessing contract.
+the fused RG10 preprocessing contract. When both plans are supplied, success
+also requires their exact SHA-256 digests, TensorRT deserialization, semantic
+tensor compatibility, and the two expected negative failure paths.
 The container first executes the same source with Address Sanitizer and
 Undefined Behavior Sanitizer, then executes the optimized binary used for the
 reported performance measurements. Leak detection is disabled because Wendy's
@@ -48,10 +52,10 @@ through the public Swift `VisionImageInput` and device-tensor lease API.
 Verified on WendyOS 0.18.1 / JetPack 7.2:
 
 ```json
-{"cProbe":{"status":"available","tensorRTVersion":101602,"cudaRuntimeVersion":13020,"cudaDriverVersion":13020,"cudaDeviceCount":1,"runtimeLifecycle":"passed","transfer":{"p50Milliseconds":0.170016,"p95Milliseconds":0.171136,"contract":"passed"},"rg10Preprocessing":{"verifiedCases":25,"maximumAbsoluteDifference":0.00000012,"fullFrameHostToDeviceCopiesPerFrame":1,"kernelLaunchesPerFrame":1,"explicitFrameSizedDeviceAllocationsAfterPreparation":0,"p50Milliseconds":0.653184,"p95Milliseconds":0.696288,"endToEndP50Milliseconds":0.663581,"endToEndP95Milliseconds":0.706149,"contract":"passed"},"retryableCleanup":"passed"},"swiftProbe":{"status":"available","swiftPublicPath":"passed","deviceAddressNonzero":true,"inputReleased":true,"h2dCopies":1,"kernelLaunches":1}}
+{"engineProbe":{"status":"available","detector":[{"name":"input","shape":[1,3,320,320]},{"name":"dets","shape":[1,-1,5]},{"name":"labels","shape":[1,-1]}],"pose":[{"name":"input","shape":[-1,3,256,192],"profile":{"min":[1,3,256,192],"opt":[2,3,256,192],"max":[4,3,256,192]}},{"name":"simcc_x","shape":[-1,133,384]},{"name":"simcc_y","shape":[-1,133,512]}]},"checksumFailureProbe":{"status":"passed","failure":"engineChecksumMismatch","stage":"checksum"},"semanticMismatchProbe":{"status":"passed","failure":"incompatibleArtifact","tensor":"labels","reason":"elementType"}}
 ```
 
 This proves the runtime boundary, a representative camera-sized host-to-GPU
-transfer, and the fused preprocessing kernel through both the C ABI and public
-Swift API. It does not claim that an actual camera lease, model engine, or pose
-inference has run.
+transfer, the fused preprocessing kernel, and exact engine acceptance through
+both the C ABI and public Swift API. It does not claim that an actual camera
+lease or semantic pose inference has run.

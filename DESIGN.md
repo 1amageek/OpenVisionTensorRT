@@ -17,6 +17,34 @@ probe failures, and runtime creation failures remain distinct typed failures.
 The scoped C++ loader owns every library handle and closes it only after all
 TensorRT objects have been destroyed.
 
+## Engine artifact owner
+
+`OVTRTEngine` memory-maps each plan read-only, computes SHA-256 directly over
+the mapped bytes, and deserializes only when the digest matches. The mapped
+range is released immediately after `deserializeCudaEngine` returns. The
+TensorRT engine is destroyed before its runtime, and both are destroyed before
+the CUDA and TensorRT dynamic-library handles close.
+
+The Swift `TensorRTEngine` actor accepts the opaque owner only after checking
+the exact TensorRT and CUDA versions, compute capability, tensor names, I/O
+modes, element types, declared shapes, and dynamic input profile. A digest
+mismatch, incompatible semantic binding, unsupported TensorRT element type, or
+deserialization failure remains a typed failure and destroys every partially
+created owner.
+
+```text
+plan file
+  -> read-only mmap
+    -> in-process SHA-256
+      -> TensorRT deserialize
+        -> exact semantic tensor validation
+          -> Swift actor owns engine
+```
+
+Plan bytes are not copied into `Data`, `Array`, or another frame-sized Swift
+container. Model inference has a separate execution-context owner and is not
+reported as complete by successful engine loading.
+
 ## Runtime owner
 
 `OVTRTRuntime` owns its logger and `nvinfer1::IRuntime`. The logger is declared
@@ -159,6 +187,7 @@ that the opaque owner remained non-null, then retried destruction successfully.
 | C preprocessor address and operation lease | `Mutex<State>` | `Mutex<State>` | `Mutex<State>` | short lease acquisition/release under the same mutex; CUDA work runs outside the critical section | destruction is excluded while a lease is active; C destroy clears the address only after successful dependency-ordered cleanup |
 | Frame sequencing and active tensor lease | `RG10Preprocessor` actor | same actor contract | same actor contract | actor-isolated `process` and `shutdown`; a live output rejects overwrite | tensor release requires the consumer's completion fence; shutdown rejects a live lease |
 | Deferred failed cleanup | `Mutex<[Entry]>` registry | same mutex contract | same mutex contract | entries are removed under lock and cleanup is attempted outside the critical section | failed owners remain retained and are retried before a new preprocessor is created |
+| TensorRT engine owner | `TensorRTEngine` actor plus `Mutex<UInt?>` opaque-handle owner | same actor and mutex contract; runtime returns typed unavailable | same actor and mutex contract; runtime returns typed unavailable | actor serializes inspection and shutdown; the mutex protects exactly-once address consumption | engine precedes runtime, and both precede dynamic-library close |
 | CUDA work state | C owner, serialized by the Swift actor | unavailable typed boundary | unavailable typed boundary | submit/wait/destroy state machine | stream sync precedes source unregister, module unload, buffer/event/stream destruction |
 
 There is no `hasFeature(Embedded)` or `canImport(Synchronization)` branch in
@@ -172,6 +201,9 @@ The Wendy deployment cross-compiles the exact package shim with pinned
 TensorRT 10.16 headers and executes it using the Jetson GPU entitlement. On
 WendyOS 0.18.1 / JetPack 7.2 it verified TensorRT 10.16.2, CUDA runtime and
 driver 13.2, one CUDA device, and one real runtime creation/destruction cycle.
-This now proves the runtime ownership boundary and fused RG10 preprocessing
-through both the C ABI and public Swift API. It does not prove semantic pose
-inference or a real camera lease; those remain separate milestones.
+It also deserialized the exact RTMDet and DWPose plans through the public Swift
+loader and validated every declared tensor and dynamic pose batch profile.
+Wrong-checksum and swapped-semantic-binding probes failed at their expected
+typed boundaries. Independent `trtexec` runs prove that both plans execute on
+this GPU; the reusable Swift execution context, semantic pose inference, and
+real camera lease remain separate milestones.

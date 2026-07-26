@@ -10,5 +10,8 @@ public enum TensorRTRuntimeStatus: Int32, Sendable, Hashable {
     case nvrtcFailure = 8
     case cudaDriverFailure = 9
     case resourceBusy = 10
+    case engineArtifactFailure = 11
+    case engineChecksumMismatch = 12
+    case engineDeserializationFailure = 13
     case unknown = -1
 }

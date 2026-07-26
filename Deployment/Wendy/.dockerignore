@@ -6,3 +6,4 @@
 !.build-context/CTensorRTShim.h
 !Dockerfile
 !Probe.cpp
+!RunProbes.sh
