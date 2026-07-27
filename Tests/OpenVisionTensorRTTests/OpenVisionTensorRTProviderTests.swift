@@ -290,6 +290,7 @@ struct OpenVisionTensorRTProviderTests {
             sourceHeight: 1080,
             sourceBytesPerRow: 3840,
             sourceByteCount: 4_147_200,
+            wordLayout: .leastSignificantBits,
             outputWidth: detectorInput.width,
             outputHeight: detectorInput.height,
             resizePolicy: detectorInput.resizePolicy,

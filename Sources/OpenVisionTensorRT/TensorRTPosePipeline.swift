@@ -437,6 +437,10 @@ public actor TensorRTPosePipeline {
             sourceWidth: UInt32(source.sourceWidth),
             sourceHeight: UInt32(source.sourceHeight),
             sourceBytesPerRow: UInt32(source.sourceBytesPerRow),
+            sourceWordLayout:
+                source.wordLayout == .leastSignificantBits
+                ? OVTRTRG10WordLayoutLeastSignificantBits
+                : OVTRTRG10WordLayoutMostSignificantBits,
             detectorInputWidth: UInt32(value.detectorInputWidth),
             detectorInputHeight: UInt32(value.detectorInputHeight),
             poseInputWidth: UInt32(value.poseInputWidth),

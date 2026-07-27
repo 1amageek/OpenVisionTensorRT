@@ -21,6 +21,7 @@
 - [x] Reusable RG10 input, tensor output, and configuration device buffers
 - [x] One NVRTC compilation and PTX module load per prepared preprocessor
 - [x] Fused SRGGB10 linearization, bilinear demosaic, orientation, and resize
+- [x] Explicit standard V4L2 and NVIDIA T_R16 RG10 word-layout selection
 - [x] Letterbox/crop, color matrix, sRGB, normalization, layout, and channel order
 - [x] One H2D copy and one kernel launch per frame
 - [x] Scoped OpenVision borrow with synchronous H2D source-read fence

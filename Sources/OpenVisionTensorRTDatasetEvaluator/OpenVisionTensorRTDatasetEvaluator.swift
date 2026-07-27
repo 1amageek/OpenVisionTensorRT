@@ -84,6 +84,7 @@ private struct DatasetEvaluationRunner {
             sourceHeight: 1_080,
             sourceBytesPerRow: 3_840,
             sourceByteCount: 4_147_200,
+            wordLayout: .leastSignificantBits,
             outputWidth: detectorInput.width,
             outputHeight: detectorInput.height,
             resizePolicy: detectorInput.resizePolicy,

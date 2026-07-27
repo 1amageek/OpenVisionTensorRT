@@ -12,6 +12,7 @@ The current implementation owns:
 - a registered-host-memory CUDA transfer probe with explicit event lifetime;
 - measured H2D copy, allocation, latency, throughput, and content evidence;
 - fused SRGGB10 GPU preprocessing into a reusable device tensor;
+- explicit standard V4L2 and NVIDIA T_R16 RG10 word layouts;
 - typed calibration, orientation, resize, normalization, and tensor layout;
 - a completion-fenced device tensor lease exposed through a scoped Swift API;
 - retryable cleanup that retains CUDA owners after destruction failure;

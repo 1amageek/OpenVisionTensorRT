@@ -81,6 +81,10 @@ bool isValidConfiguration(
             OVTRTTensorChannelOrderRGB ||
         configuration.channelOrder >
             OVTRTTensorChannelOrderBGR ||
+        configuration.wordLayout <
+            OVTRTRG10WordLayoutLeastSignificantBits ||
+        configuration.wordLayout >
+            OVTRTRG10WordLayoutMostSignificantBits ||
         configuration.applySRGBTransfer > 1
     ) {
         return false;
@@ -341,6 +345,7 @@ __device__ float ovtrt_raw(
     unsigned int bytesPerRow,
     int x,
     int y,
+    unsigned int sampleBitShift,
     float const *configuration
 ) {
     x = ovtrt_reflect(x, static_cast<int>(width));
@@ -351,7 +356,7 @@ __device__ float ovtrt_raw(
     unsigned int value =
         static_cast<unsigned int>(source[offset]) |
         (static_cast<unsigned int>(source[offset + 1]) << 8U);
-    value &= 1023U;
+    value = (value >> sampleBitShift) & 1023U;
     unsigned int site =
         ((static_cast<unsigned int>(y) & 1U) << 1U) |
         (static_cast<unsigned int>(x) & 1U);
@@ -373,6 +378,7 @@ __device__ void ovtrt_rgb_at(
     unsigned int bytesPerRow,
     int x,
     int y,
+    unsigned int sampleBitShift,
     float const *configuration,
     float &red,
     float &green,
@@ -387,59 +393,60 @@ __device__ void ovtrt_rgb_at(
         bytesPerRow,
         x,
         y,
+        sampleBitShift,
         configuration
     );
     if (evenX && evenY) {
         red = center;
         green = 0.25F * (
-            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x, y - 1, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x, y + 1, configuration)
+            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x, y - 1, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x, y + 1, sampleBitShift, configuration)
         );
         blue = 0.25F * (
-            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y - 1, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y - 1, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y + 1, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y + 1, configuration)
+            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y - 1, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y - 1, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y + 1, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y + 1, sampleBitShift, configuration)
         );
         return;
     }
     if (!evenX && !evenY) {
         blue = center;
         green = 0.25F * (
-            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x, y - 1, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x, y + 1, configuration)
+            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x, y - 1, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x, y + 1, sampleBitShift, configuration)
         );
         red = 0.25F * (
-            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y - 1, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y - 1, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y + 1, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y + 1, configuration)
+            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y - 1, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y - 1, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y + 1, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y + 1, sampleBitShift, configuration)
         );
         return;
     }
     green = center;
     if (!evenX && evenY) {
         red = 0.5F * (
-            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y, configuration)
+            ovtrt_raw(source, width, height, bytesPerRow, x - 1, y, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x + 1, y, sampleBitShift, configuration)
         );
         blue = 0.5F * (
-            ovtrt_raw(source, width, height, bytesPerRow, x, y - 1, configuration) +
-            ovtrt_raw(source, width, height, bytesPerRow, x, y + 1, configuration)
+            ovtrt_raw(source, width, height, bytesPerRow, x, y - 1, sampleBitShift, configuration) +
+            ovtrt_raw(source, width, height, bytesPerRow, x, y + 1, sampleBitShift, configuration)
         );
         return;
     }
     red = 0.5F * (
-        ovtrt_raw(source, width, height, bytesPerRow, x, y - 1, configuration) +
-        ovtrt_raw(source, width, height, bytesPerRow, x, y + 1, configuration)
+        ovtrt_raw(source, width, height, bytesPerRow, x, y - 1, sampleBitShift, configuration) +
+        ovtrt_raw(source, width, height, bytesPerRow, x, y + 1, sampleBitShift, configuration)
     );
     blue = 0.5F * (
-        ovtrt_raw(source, width, height, bytesPerRow, x - 1, y, configuration) +
-        ovtrt_raw(source, width, height, bytesPerRow, x + 1, y, configuration)
+        ovtrt_raw(source, width, height, bytesPerRow, x - 1, y, sampleBitShift, configuration) +
+        ovtrt_raw(source, width, height, bytesPerRow, x + 1, y, sampleBitShift, configuration)
     );
 }
 
@@ -502,6 +509,7 @@ __global__ void ovtrt_rg10_preprocess(
     unsigned int resizePolicy,
     unsigned int tensorLayout,
     unsigned int channelOrder,
+    unsigned int sampleBitShift,
     unsigned int applySRGBTransfer
 ) {
     unsigned int outputX =
@@ -592,10 +600,10 @@ __global__ void ovtrt_rg10_preprocess(
         float fractionX = sourceX - static_cast<float>(x0);
         float fractionY = sourceY - static_cast<float>(y0);
         float samples[12];
-        ovtrt_rgb_at(source, sourceWidth, sourceHeight, sourceBytesPerRow, x0, y0, configuration, samples[0], samples[1], samples[2]);
-        ovtrt_rgb_at(source, sourceWidth, sourceHeight, sourceBytesPerRow, x1, y0, configuration, samples[3], samples[4], samples[5]);
-        ovtrt_rgb_at(source, sourceWidth, sourceHeight, sourceBytesPerRow, x0, y1, configuration, samples[6], samples[7], samples[8]);
-        ovtrt_rgb_at(source, sourceWidth, sourceHeight, sourceBytesPerRow, x1, y1, configuration, samples[9], samples[10], samples[11]);
+        ovtrt_rgb_at(source, sourceWidth, sourceHeight, sourceBytesPerRow, x0, y0, sampleBitShift, configuration, samples[0], samples[1], samples[2]);
+        ovtrt_rgb_at(source, sourceWidth, sourceHeight, sourceBytesPerRow, x1, y0, sampleBitShift, configuration, samples[3], samples[4], samples[5]);
+        ovtrt_rgb_at(source, sourceWidth, sourceHeight, sourceBytesPerRow, x0, y1, sampleBitShift, configuration, samples[6], samples[7], samples[8]);
+        ovtrt_rgb_at(source, sourceWidth, sourceHeight, sourceBytesPerRow, x1, y1, sampleBitShift, configuration, samples[9], samples[10], samples[11]);
         float topRed = samples[0] + (samples[3] - samples[0]) * fractionX;
         float topGreen = samples[1] + (samples[4] - samples[1]) * fractionX;
         float topBlue = samples[2] + (samples[5] - samples[2]) * fractionX;
@@ -1532,6 +1540,11 @@ OVTRTStatus ovtrt_rg10_preprocessor_submit(
     );
     unsigned int applySRGBTransfer =
         preprocessor->configuration.applySRGBTransfer;
+    unsigned int sampleBitShift =
+        preprocessor->configuration.wordLayout ==
+            OVTRTRG10WordLayoutMostSignificantBits
+        ? 6U
+        : 0U;
     void *arguments[] = {
         &preprocessor->deviceInput,
         &preprocessor->deviceOutput,
@@ -1545,6 +1558,7 @@ OVTRTStatus ovtrt_rg10_preprocessor_submit(
         &resizePolicy,
         &tensorLayout,
         &channelOrder,
+        &sampleBitShift,
         &applySRGBTransfer
     };
     unsigned int blockWidth = 16;

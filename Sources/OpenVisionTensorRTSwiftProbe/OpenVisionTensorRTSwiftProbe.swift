@@ -139,6 +139,7 @@ enum OpenVisionTensorRTSwiftProbe {
             sourceHeight: height,
             sourceBytesPerRow: bytesPerRow,
             sourceByteCount: byteCount,
+            wordLayout: .leastSignificantBits,
                 outputWidth: modelInput?.width ?? 256,
                 outputHeight: modelInput?.height ?? 256,
                 resizePolicy: modelInput?.resizePolicy ?? .scaleFit,

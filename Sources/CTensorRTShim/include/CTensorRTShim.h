@@ -216,6 +216,11 @@ typedef enum OVTRTTensorChannelOrder {
     OVTRTTensorChannelOrderBGR = 1
 } OVTRTTensorChannelOrder;
 
+typedef enum OVTRTRG10WordLayout {
+    OVTRTRG10WordLayoutLeastSignificantBits = 0,
+    OVTRTRG10WordLayoutMostSignificantBits = 1
+} OVTRTRG10WordLayout;
+
 typedef enum OVTRTRG10PreprocessingStage {
     OVTRTRG10PreprocessingStageNone = 0,
     OVTRTRG10PreprocessingStageConfiguration = 1,
@@ -261,6 +266,7 @@ typedef struct OVTRTRG10PreprocessingConfiguration {
     uint32_t sourceHeight;
     uint32_t sourceBytesPerRow;
     uint64_t sourceByteCount;
+    OVTRTRG10WordLayout wordLayout;
     uint32_t outputWidth;
     uint32_t outputHeight;
     OVTRTRG10ResizePolicy resizePolicy;
@@ -372,6 +378,7 @@ typedef struct OVTRTPosePipelineConfiguration {
     uint32_t sourceWidth;
     uint32_t sourceHeight;
     uint32_t sourceBytesPerRow;
+    OVTRTRG10WordLayout sourceWordLayout;
     uint32_t detectorInputWidth;
     uint32_t detectorInputHeight;
     uint32_t poseInputWidth;

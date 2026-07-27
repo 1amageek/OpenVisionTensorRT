@@ -16,6 +16,7 @@ public struct RG10PreprocessingConfiguration: Sendable, Hashable {
     public let sourceHeight: Int
     public let sourceBytesPerRow: Int
     public let sourceByteCount: Int
+    public let wordLayout: RG10WordLayout
     public let outputWidth: Int
     public let outputHeight: Int
     public let resizePolicy: VisionModelInputDescriptor.ResizePolicy
@@ -36,6 +37,7 @@ public struct RG10PreprocessingConfiguration: Sendable, Hashable {
         sourceHeight: Int,
         sourceBytesPerRow: Int,
         sourceByteCount: Int,
+        wordLayout: RG10WordLayout,
         outputWidth: Int,
         outputHeight: Int,
         resizePolicy: VisionModelInputDescriptor.ResizePolicy,
@@ -146,6 +148,7 @@ public struct RG10PreprocessingConfiguration: Sendable, Hashable {
         self.sourceHeight = sourceHeight
         self.sourceBytesPerRow = sourceBytesPerRow
         self.sourceByteCount = sourceByteCount
+        self.wordLayout = wordLayout
         self.outputWidth = outputWidth
         self.outputHeight = outputHeight
         self.resizePolicy = resizePolicy

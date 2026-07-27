@@ -337,6 +337,12 @@ struct TensorRTRuntimeContractTests {
         #expect(configuration.outputHeight == 256)
     }
 
+    @Test("RG10 word layouts expose exact sample bit shifts")
+    func rg10WordLayouts() {
+        #expect(RG10WordLayout.leastSignificantBits.sampleBitShift == 0)
+        #expect(RG10WordLayout.mostSignificantBits.sampleBitShift == 6)
+    }
+
     @Test("RG10 preprocessing rejects a truncated source layout")
     func truncatedRG10Source() {
         #expect(
@@ -349,6 +355,7 @@ struct TensorRTRuntimeContractTests {
                 sourceHeight: 1080,
                 sourceBytesPerRow: 3840,
                 sourceByteCount: 4_147_199,
+                wordLayout: .leastSignificantBits,
                 outputWidth: 256,
                 outputHeight: 256,
                 resizePolicy: .scaleFit,
@@ -543,6 +550,7 @@ struct TensorRTRuntimeContractTests {
             sourceHeight: sourceHeight,
             sourceBytesPerRow: sourceBytesPerRow,
             sourceByteCount: sourceByteCount,
+            wordLayout: .leastSignificantBits,
             outputWidth: outputWidth,
             outputHeight: outputHeight,
             resizePolicy: resizePolicy,

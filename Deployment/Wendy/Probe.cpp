@@ -40,7 +40,12 @@ float rawValue(
     uint32_t value =
         static_cast<uint32_t>(source[offset]) |
         (static_cast<uint32_t>(source[offset + 1]) << 8U);
-    value &= 1023U;
+    uint32_t sampleBitShift =
+        configuration.wordLayout ==
+            OVTRTRG10WordLayoutMostSignificantBits
+        ? 6U
+        : 0U;
+    value = (value >> sampleBitShift) & 1023U;
     uint32_t site =
         ((static_cast<uint32_t>(y) & 1U) << 1U) |
         (static_cast<uint32_t>(x) & 1U);
@@ -429,6 +434,7 @@ OVTRTRG10PreprocessingConfiguration configuration(
     value.resizePolicy = resizePolicy;
     value.tensorLayout = OVTRTTensorLayoutNCHW;
     value.channelOrder = OVTRTTensorChannelOrderRGB;
+    value.wordLayout = OVTRTRG10WordLayoutLeastSignificantBits;
     value.whiteLevel = 1023.0F;
     value.gainR = 1.0F;
     value.gainGreenR = 1.0F;
@@ -461,6 +467,14 @@ std::vector<uint8_t> fixture(
                     ((y & 1U) << 1U | (x & 1U)) * 181U
                 ) & 1023U
             );
+            if (
+                configuration.wordLayout ==
+                OVTRTRG10WordLayoutMostSignificantBits
+            ) {
+                value = static_cast<uint16_t>(
+                    (value << 6U) | (value >> 4U)
+                );
+            }
             size_t offset =
                 static_cast<size_t>(y) *
                 configuration.sourceBytesPerRow +
@@ -759,16 +773,12 @@ int main() {
 
     float maximumDifference = 0.0F;
     uint32_t verifiedCaseCount = 0;
-    for (int policyValue = 0; policyValue < 3; ++policyValue) {
-        auto policy =
-            static_cast<OVTRTRG10ResizePolicy>(policyValue);
-        auto testConfiguration = configuration(
-            8,
-            6,
-            7,
-            5,
-            policy
-        );
+    for (int layoutValue = 0; layoutValue < 2; ++layoutValue) {
+      for (int policyValue = 0; policyValue < 3; ++policyValue) {
+        auto policy = static_cast<OVTRTRG10ResizePolicy>(policyValue);
+        auto testConfiguration = configuration(8, 6, 7, 5, policy);
+        testConfiguration.wordLayout =
+            static_cast<OVTRTRG10WordLayout>(layoutValue);
         if (policy == OVTRTRG10ResizePolicyScaleFit) {
             testConfiguration.blackLevelR = 64.0F;
             testConfiguration.blackLevelGreenR = 60.0F;
@@ -854,6 +864,7 @@ int main() {
         if (!destroyed(preprocessor)) {
             return 32;
         }
+      }
     }
     if (!verifiedGoldenFrame(maximumDifference)) {
         return 38;

@@ -282,6 +282,10 @@ public actor RG10Preprocessor {
             sourceHeight: UInt32(value.sourceHeight),
             sourceBytesPerRow: UInt32(value.sourceBytesPerRow),
             sourceByteCount: UInt64(value.sourceByteCount),
+            wordLayout:
+                value.wordLayout == .leastSignificantBits
+                ? OVTRTRG10WordLayoutLeastSignificantBits
+                : OVTRTRG10WordLayoutMostSignificantBits,
             outputWidth: UInt32(value.outputWidth),
             outputHeight: UInt32(value.outputHeight),
             resizePolicy: rawResizePolicy(

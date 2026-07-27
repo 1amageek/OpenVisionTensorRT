@@ -126,6 +126,14 @@ per-Bayer-site black levels and gains, a 3x3 color transform, optional sRGB
 transfer, and independent red/green/blue affine normalization. Unsupported
 hosts return typed unavailable evidence; no CPU fallback is selected.
 
+The source word layout is explicit. Standard V4L2 expanded RG10 places the
+sample in bits 0...9, while Jetson Xavier and Orin VI expose RAW10 through
+NVIDIA T_R16 with the sample in bits 6...15 and replicated low bits. Both the
+full-frame detector kernel and region-affine pose kernel consume the same
+`RG10WordLayout`; neither guesses a layout from the RG10 FourCC. Layout
+selection changes only the bit extraction in the fused kernels and introduces
+no additional allocation or copy.
+
 `regionAffine` remains intentionally rejected by the full-frame preprocessor.
 The dedicated `TensorRTPosePipeline` receives detector outputs and the original
 RG10 device source, selects at most four confidence-sorted person regions on
