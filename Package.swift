@@ -23,9 +23,17 @@ let package = Package(
         .executable(
             name: "openvision-tensorrt-engine-probe",
             targets: ["OpenVisionTensorRTEngineProbe"]
+        ),
+        .executable(
+            name: "openvision-tensorrt-dataset-evaluator",
+            targets: ["OpenVisionTensorRTDatasetEvaluator"]
         )
     ],
     dependencies: [
+        .package(
+            url: "https://github.com/1amageek/ActionRecognition.git",
+            branch: "main"
+        ),
         .package(
             url: "https://github.com/1amageek/OpenVision.git",
             branch: "main"
@@ -65,6 +73,22 @@ let package = Package(
                 "OpenVisionTensorRT",
                 "OpenVision"
             ]
+        ),
+        .executableTarget(
+            name: "OpenVisionTensorRTDatasetEvaluator",
+            dependencies: [
+                "ActionRecognition",
+                "OpenVisionTensorRT",
+                "OpenVision",
+                "OpenVisionTensorRTEvaluation"
+            ]
+        ),
+        .target(
+            name: "OpenVisionTensorRTEvaluation"
+        ),
+        .testTarget(
+            name: "OpenVisionTensorRTEvaluationTests",
+            dependencies: ["OpenVisionTensorRTEvaluation"]
         ),
         .testTarget(
             name: "OpenVisionTensorRTTests",

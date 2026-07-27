@@ -61,14 +61,18 @@
 - [x] Typed cancellation, busy, release, discard, and shutdown paths
 - [x] Persistent GPU allocations and bounded host readback storage
 - [x] Sustained provider execution on Jetson with stable observation counts
+- [x] Stratified overhead-image screening through the production RG10 provider
+      path with per-frame observation and latency reports
+- [x] ActionRecognition integration target with stateful OpenVision tracking,
+      bounded compact history, and typed horizontal-swipe lifecycle output
 
 ## Incomplete production work
 
 - [ ] Run the public provider with a real camera frame lease.
 - [ ] Measure sustained 1920x1080 RG10 at 30 FPS on Jetson.
 - [ ] Prove a DMA-BUF/external-memory import before advertising direct import.
-- [ ] Evaluate ceiling-view pose accuracy and false positives with captured
-      product-domain data.
+- [ ] Quantify ceiling-view keypoint accuracy and false positives with captured
+      WAVESHARE-26185 product-domain data and keypoint ground truth.
 - [ ] Complete the checkpoint and training-dataset license review.
 
 The first launch immediately after the final image transfer reported one typed
@@ -109,13 +113,37 @@ automatic or silent fallback.
 | Complete fixture provider path | A real 1920x1080 RG10 fixture passed `VisionImageInput` borrow -> one H2D -> RTMDet -> bounded ROI -> RG10 region affine -> DWPose -> SimCC decode -> four `HumanBodyPoseObservation` values containing 74 body and 138 hand joints |
 | Sustained provider path | One prepared provider session completed 5 warm-up and 30 measured executions with stable observation counts; end-to-end p50 11.659648 ms and p95 11.748704 ms |
 | Compact readback | No image or tensor is copied back to the host. At the four-person bound, only one 4-byte count, 80 bytes of regions, and 6,384 bytes of joint tuples cross D2H |
+| Rough overhead screening | 48 WEPDTOF frames from 16 scenes ran through one provider session. Thirteen frames produced poses; capacity-adjusted count recall proxy was 15.6%, with no false positive in the single negative frame. The 1–4-person subset produced a pose in only 1 of 10 frames, showing a ceiling/fisheye domain gap beyond the four-person cap. Warm execution averaged 7.53 ms, with p50 5.24 ms and maximum 14.58 ms |
 | Current complete GPU slice | `VisionImageInput` borrow -> one RG10 H2D -> fused CUDA detector preprocessing -> RTMDet -> GPU ROI affine -> DWPose -> GPU SimCC decode -> compact D2H -> OpenVision observations |
+| M4 temporal integration | Passed on Jetson with 62 contiguous IPN frames: 62/62 frames had pose, one actor remained on one track, and one rightward horizontal swipe completed `began -> changed -> ended`; annotations were evaluation-only metadata |
+| M4 temporal latency | Pose p50/p95 8.240512/8.884928 ms; ActionRecognition p50/p95 0.015776/0.017216 ms; complete path p50/p95 8.256064/8.901664 ms |
+| M4 bounded history | Maximum 61 compact samples and 4,392 retained feature bytes; no full frame was retained by ActionRecognition |
 | Remaining integration path | Actual camera lease and storage negotiation, then sustained 30 FPS capture. DMA-BUF direct import is a separate capability and is not advertised |
 
 ## Release gates beyond implementation
 
-- The selected checkpoints are a bring-up baseline. Ceiling-view camera
+- The selected checkpoints are a bring-up baseline. Rough third-party
+  ceiling-view screening shows inadequate recall, but product-domain keypoint
   accuracy and false-positive behavior remain unmeasured.
 - `licenseIdentifier` remains absent for both checkpoint provenances until the
   model and training-dataset usage review is complete.
 - Neither condition is converted into a successful production-readiness claim.
+
+## M4 execution boundary
+
+M4 proves one complete offline temporal execution on the Jetson GPU:
+
+```text
+62 contiguous RG10 frames
+    -> production TensorRT pose provider
+    -> OpenVision stateful body tracking
+    -> ActionRecognition horizontal swipe lifecycle
+    -> typed JSON result and latency/memory report
+```
+
+Wendy CLI `2026.07.17-173113` lost the OCI entrypoint and image environment
+variables when its default chunk-diff deployment path was used. Repeating the
+same deployment with `--chunking off` preserved
+`/usr/local/bin/run-openvision-probes` and both exact plan digests. That normal
+Wendy launch completed with exit code zero. Deployment instructions therefore
+pin the verified non-chunked path until the CLI defect is fixed.

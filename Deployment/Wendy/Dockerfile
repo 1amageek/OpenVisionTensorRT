@@ -70,7 +70,10 @@ COPY .build-context/Sources/OpenVisionTensorRT ./swift-source/Sources/OpenVision
 COPY .build-context/Sources/OpenVisionTensorRTRuntimeProbe ./swift-source/Sources/OpenVisionTensorRTRuntimeProbe
 COPY .build-context/Sources/OpenVisionTensorRTSwiftProbe ./swift-source/Sources/OpenVisionTensorRTSwiftProbe
 COPY .build-context/Sources/OpenVisionTensorRTEngineProbe ./swift-source/Sources/OpenVisionTensorRTEngineProbe
+COPY .build-context/Sources/OpenVisionTensorRTDatasetEvaluator ./swift-source/Sources/OpenVisionTensorRTDatasetEvaluator
+COPY .build-context/Sources/OpenVisionTensorRTEvaluation ./swift-source/Sources/OpenVisionTensorRTEvaluation
 COPY .build-context/Tests/OpenVisionTensorRTTests ./swift-source/Tests/OpenVisionTensorRTTests
+COPY .build-context/Tests/OpenVisionTensorRTEvaluationTests ./swift-source/Tests/OpenVisionTensorRTEvaluationTests
 
 RUN find /build/swift-source \
         -maxdepth 4 \
@@ -130,6 +133,15 @@ RUN CPLUS_INCLUDE_PATH="/usr/local/cuda-13.2/include:/build/TensorRT-10.16/inclu
     swift build \
         --package-path /build/swift-source \
         --configuration release \
+        --product openvision-tensorrt-dataset-evaluator \
+        -Xcc -I/usr/local/cuda-13.2/include \
+        -Xcc -I/build/TensorRT-10.16/include \
+        --static-swift-stdlib
+
+RUN CPLUS_INCLUDE_PATH="/usr/local/cuda-13.2/include:/build/TensorRT-10.16/include" \
+    swift build \
+        --package-path /build/swift-source \
+        --configuration release \
         --product openvision-tensorrt-engine-probe \
         -Xcc -I/usr/local/cuda-13.2/include \
         -Xcc -I/build/TensorRT-10.16/include \
@@ -158,8 +170,12 @@ COPY --from=builder \
 COPY --from=builder \
     /build/swift-source/.build/release/openvision-tensorrt-engine-probe \
     /usr/local/bin/openvision-tensorrt-engine-probe
+COPY --from=builder \
+    /build/swift-source/.build/release/openvision-tensorrt-dataset-evaluator \
+    /usr/local/bin/openvision-tensorrt-dataset-evaluator
 COPY .build-context/Models /opt/openvision/models
 COPY .build-context/Fixtures /opt/openvision/fixtures
+COPY .build-context/Evaluation /opt/openvision/evaluation
 COPY --from=builder \
     /usr/local/cuda-13.2/targets/sbsa-linux/lib/libnvrtc.so* \
     /usr/local/lib/

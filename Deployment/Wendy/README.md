@@ -12,6 +12,40 @@ OPENVISION_TRT_POSE_PLAN=/path/to/dwpose-fp16.plan \
 ./scripts/prepare-wendy-runtime-probe.sh
 ```
 
+An optional stratified RG10 dataset evaluation can be included without
+changing the production provider:
+
+```bash
+OPENVISION_TRT_DETECTOR_PLAN=/path/to/rtmdet-fp16.plan \
+OPENVISION_TRT_POSE_PLAN=/path/to/dwpose-fp16.plan \
+OPENVISION_TRT_RG10_FIXTURE=/path/to/person.rg10 \
+OPENVISION_TRT_EVALUATION_ROOT=/path/to/evaluation \
+./scripts/prepare-wendy-runtime-probe.sh
+```
+
+The evaluation root must contain `runtime-manifest.tsv` and `fixtures/*.rg10`.
+The evaluator keeps one TensorRT provider session alive across all frames and
+reports count proxies, joint coverage, and p50/p95 latency. These metrics are
+screening evidence; they are not pose accuracy because the WEPDTOF base release
+does not contain joint ground truth.
+
+A contiguous temporal RG10 sequence can exercise the complete M4 path from
+TensorRT pose inference through OpenVision tracking and ActionRecognition:
+
+```bash
+OPENVISION_TRT_DETECTOR_PLAN=/path/to/rtmdet-fp16.plan \
+OPENVISION_TRT_POSE_PLAN=/path/to/dwpose-fp16.plan \
+OPENVISION_TRT_RG10_FIXTURE=/path/to/person.rg10 \
+OPENVISION_TRT_TEMPORAL_EVALUATION_ROOT=/path/to/temporal-evaluation \
+./scripts/prepare-wendy-runtime-probe.sh
+```
+
+The temporal root has the same `runtime-manifest.tsv` and `fixtures/*.rg10`
+layout. Frames must be ordered in the manifest. Annotation labels are reported
+only as evaluation metadata and are never passed to the recognizer. A
+`completedNoGesture` status means the entire execution path completed but no
+gesture reached the `ended` phase; it is not a successful recognition result.
+
 Then build and run the arm64 container:
 
 ```bash
@@ -19,9 +53,16 @@ wendy run \
   --device 169.254.58.23 \
   --prefix Deployment/Wendy \
   --builder apple-container \
+  --chunking off \
   --no-restart \
   --yes
 ```
+
+`--chunking off` is currently required with Wendy CLI
+`2026.07.17-173113`. Its chunk-diff deployment path imported all image layers
+but replaced the OCI entrypoint with `/bin/sh` and omitted image environment
+variables. The non-chunked deployment preserved the image entrypoint and both
+plan digests, ran the complete probe, and exited with code zero.
 
 Success requires CUDA device enumeration, one real TensorRT runtime
 creation/destruction cycle, the representative frame transfer contract, and
