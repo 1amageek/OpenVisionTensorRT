@@ -12,6 +12,7 @@ public struct TensorRTPosePipelineConfiguration:
     public let maximumRegionCount: Int
     public let jointCount: Int
     public let minimumDetectionConfidence: Float
+    public let maximumDetectionOverlap: Float
     public let regionScale: Float
     public let poseNormalization:
         VisionModelInputDescriptor.Normalization
@@ -25,6 +26,7 @@ public struct TensorRTPosePipelineConfiguration:
         maximumRegionCount: Int = 4,
         jointCount: Int = 133,
         minimumDetectionConfidence: Float = 0.3,
+        maximumDetectionOverlap: Float = 0.5,
         regionScale: Float = 1.25,
         poseNormalization:
             VisionModelInputDescriptor.Normalization
@@ -55,6 +57,15 @@ public struct TensorRTPosePipelineConfiguration:
                 "minimumDetectionConfidence"
             )
         }
+        guard
+            maximumDetectionOverlap.isFinite,
+            maximumDetectionOverlap > 0,
+            maximumDetectionOverlap <= 1
+        else {
+            throw .invalidConfiguration(
+                "maximumDetectionOverlap"
+            )
+        }
         guard regionScale.isFinite, regionScale > 0 else {
             throw .invalidConfiguration("regionScale")
         }
@@ -81,6 +92,7 @@ public struct TensorRTPosePipelineConfiguration:
         self.jointCount = jointCount
         self.minimumDetectionConfidence =
             minimumDetectionConfidence
+        self.maximumDetectionOverlap = maximumDetectionOverlap
         self.regionScale = regionScale
         self.poseNormalization = poseNormalization
     }

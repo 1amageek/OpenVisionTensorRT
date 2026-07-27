@@ -60,6 +60,38 @@ struct OpenVisionTensorRTProviderTests {
         }
     }
 
+    @Test("Pose pipeline validates duplicate suppression overlap")
+    func duplicateSuppressionOverlapValidation() throws {
+        let configuration = try makeProviderConfiguration().posePipeline
+        #expect(configuration.maximumDetectionOverlap == 0.5)
+
+        #expect(
+            throws:
+                TensorRTPosePipelineError.invalidConfiguration(
+                    "maximumDetectionOverlap"
+                )
+        ) {
+            _ = try TensorRTPosePipelineConfiguration(
+                source: configuration.source,
+                detectorInputWidth:
+                    configuration.detectorInputWidth,
+                detectorInputHeight:
+                    configuration.detectorInputHeight,
+                poseInputWidth: configuration.poseInputWidth,
+                poseInputHeight: configuration.poseInputHeight,
+                maximumRegionCount:
+                    configuration.maximumRegionCount,
+                jointCount: configuration.jointCount,
+                minimumDetectionConfidence:
+                    configuration.minimumDetectionConfidence,
+                maximumDetectionOverlap: 0,
+                regionScale: configuration.regionScale,
+                poseNormalization:
+                    configuration.poseNormalization
+            )
+        }
+    }
+
     @Test("Pose pipeline reports typed unavailability on macOS")
     func unavailablePosePipeline() throws {
         #if os(macOS)

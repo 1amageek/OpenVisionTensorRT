@@ -386,6 +386,7 @@ typedef struct OVTRTPosePipelineConfiguration {
     uint32_t maximumRegionCount;
     uint32_t jointCount;
     float minimumDetectionConfidence;
+    float maximumDetectionOverlap;
     float regionScale;
     float blackLevelR;
     float blackLevelGreenR;

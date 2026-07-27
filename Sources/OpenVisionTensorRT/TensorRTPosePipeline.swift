@@ -449,6 +449,8 @@ public actor TensorRTPosePipeline {
             jointCount: UInt32(value.jointCount),
             minimumDetectionConfidence:
                 value.minimumDetectionConfidence,
+            maximumDetectionOverlap:
+                value.maximumDetectionOverlap,
             regionScale: value.regionScale,
             blackLevelR: source.blackLevels.red,
             blackLevelGreenR:

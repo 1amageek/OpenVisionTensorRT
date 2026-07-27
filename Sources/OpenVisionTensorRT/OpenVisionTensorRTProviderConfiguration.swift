@@ -102,6 +102,7 @@ public struct OpenVisionTensorRTProviderConfiguration: Sendable {
             maximumRegionCount: maximumCount,
             jointCount: 133,
             minimumDetectionConfidence: minimumConfidence,
+            maximumDetectionOverlap: 0.5,
             regionScale: scale,
             poseNormalization: poseStage.input.normalization
         )

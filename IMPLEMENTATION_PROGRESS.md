@@ -54,6 +54,7 @@
 - [x] Typed output-capacity, execution-stage, borrow, and cleanup failures
 - [x] Retryable explicit execution-resource cleanup
 - [x] GPU detector decode with bounded confidence-sorted person ROI selection
+- [x] GPU person-region duplicate suppression before batched pose inference
 - [x] Fused RG10-to-pose region-affine CUDA preprocessing
 - [x] Batched DWPose execution through the public Swift path
 - [x] SimCC GPU decode with compact region and joint readback
@@ -112,6 +113,7 @@ automatic or silent fallback.
 | Swift detector execution | The final cold-start probe used 10 warm-up and 100 measured detector submissions. GPU inference measured p50 2.550144 ms and p95 2.595040 ms |
 | Detector execution memory | The dynamic detector allocator reserves the graph-required 2,100 candidates separately from the semantic maximum of 100 detections: 58,800 persistent device bytes, stable output addresses, and zero explicit per-frame device allocations |
 | Complete fixture provider path | A real 1920x1080 RG10 fixture passed `VisionImageInput` borrow -> one H2D -> RTMDet -> bounded ROI -> RG10 region affine -> DWPose -> SimCC decode -> four `HumanBodyPoseObservation` values containing 74 body and 138 hand joints |
+| Duplicate-region contract | Detector candidates with intersection-over-union above 0.5 are suppressed on the GPU in favor of the higher-confidence candidate before pose batching; the configured threshold has typed range validation |
 | Sustained provider path | One prepared provider session completed 5 warm-up and 30 measured executions with stable observation counts; end-to-end p50 11.659648 ms and p95 11.748704 ms |
 | Compact readback | No image or tensor is copied back to the host. At the four-person bound, only one 4-byte count, 80 bytes of regions, and 6,384 bytes of joint tuples cross D2H |
 | Rough overhead screening | 48 WEPDTOF frames from 16 scenes ran through one provider session. Thirteen frames produced poses; capacity-adjusted count recall proxy was 15.6%, with no false positive in the single negative frame. The 1–4-person subset produced a pose in only 1 of 10 frames, showing a ceiling/fisheye domain gap beyond the four-person cap. Warm execution averaged 7.53 ms, with p50 5.24 ms and maximum 14.58 ms |

@@ -51,6 +51,9 @@ bool isValidConfiguration(
         !isFinite(configuration.minimumDetectionConfidence) ||
         configuration.minimumDetectionConfidence < 0.0F ||
         configuration.minimumDetectionConfidence > 1.0F ||
+        !isFinite(configuration.maximumDetectionOverlap) ||
+        configuration.maximumDetectionOverlap <= 0.0F ||
+        configuration.maximumDetectionOverlap > 1.0F ||
         !isFinite(configuration.regionScale) ||
         configuration.regionScale <= 0.0F ||
         configuration.sourceWordLayout <
@@ -453,6 +456,45 @@ __device__ float ovtrt_srgb(float linear) {
     return 1.055F * powf(linear, 1.0F / 2.4F) - 0.055F;
 }
 
+__device__ bool ovtrt_valid_person_detection(
+    float const *detection,
+    long long detectionClass,
+    float minimumConfidence
+) {
+    return detectionClass == 0LL &&
+        isfinite(detection[0]) &&
+        isfinite(detection[1]) &&
+        isfinite(detection[2]) &&
+        isfinite(detection[3]) &&
+        isfinite(detection[4]) &&
+        detection[4] >= minimumConfidence &&
+        detection[2] > detection[0] &&
+        detection[3] > detection[1];
+}
+
+__device__ float ovtrt_detection_iou(
+    float const *first,
+    float const *second
+) {
+    float intersectionWidth = fmaxf(
+        0.0F,
+        fminf(first[2], second[2]) -
+            fmaxf(first[0], second[0])
+    );
+    float intersectionHeight = fmaxf(
+        0.0F,
+        fminf(first[3], second[3]) -
+            fmaxf(first[1], second[1])
+    );
+    float intersectionArea = intersectionWidth * intersectionHeight;
+    float firstArea =
+        (first[2] - first[0]) * (first[3] - first[1]);
+    float secondArea =
+        (second[2] - second[0]) * (second[3] - second[1]);
+    float unionArea = firstArea + secondArea - intersectionArea;
+    return unionArea > 0.0F ? intersectionArea / unionArea : 0.0F;
+}
+
 __global__ void ovtrt_select_regions(
     float const *detections,
     long long const *classes,
@@ -462,6 +504,7 @@ __global__ void ovtrt_select_regions(
     unsigned int orientedWidth,
     unsigned int orientedHeight,
     float minimumConfidence,
+    float maximumDetectionOverlap,
     float regionScale,
     unsigned int poseWidth,
     unsigned int poseHeight,
@@ -493,11 +536,42 @@ __global__ void ovtrt_select_regions(
     for (unsigned int index = 0; index < detectionCount; ++index) {
         float const *detection = detections + index * 5U;
         float confidence = detection[4];
-        if (
-            classes[index] != 0LL ||
-            !isfinite(confidence) ||
-            confidence < minimumConfidence
+        if (!ovtrt_valid_person_detection(
+            detection,
+            classes[index],
+            minimumConfidence
+        )) {
+            continue;
+        }
+        bool isSuppressed = false;
+        for (
+            unsigned int otherIndex = 0;
+            otherIndex < detectionCount;
+            ++otherIndex
         ) {
+            if (otherIndex == index) {
+                continue;
+            }
+            float const *other = detections + otherIndex * 5U;
+            if (!ovtrt_valid_person_detection(
+                other,
+                classes[otherIndex],
+                minimumConfidence
+            )) {
+                continue;
+            }
+            bool hasHigherPriority = other[4] > confidence ||
+                (other[4] == confidence && otherIndex < index);
+            if (
+                hasHigherPriority &&
+                ovtrt_detection_iou(detection, other) >
+                    maximumDetectionOverlap
+            ) {
+                isSuppressed = true;
+                break;
+            }
+        }
+        if (isSuppressed) {
             continue;
         }
         float x1 = ovtrt_clamp(
@@ -1330,6 +1404,8 @@ OVTRTStatus ovtrt_pose_pipeline_prepare_input(
         pipeline->configuration.detectorInputHeight;
     float minimumConfidence =
         pipeline->configuration.minimumDetectionConfidence;
+    float maximumDetectionOverlap =
+        pipeline->configuration.maximumDetectionOverlap;
     float regionScale = pipeline->configuration.regionScale;
     unsigned int poseWidth =
         pipeline->configuration.poseInputWidth;
@@ -1348,6 +1424,7 @@ OVTRTStatus ovtrt_pose_pipeline_prepare_input(
         &pipeline->orientedWidth,
         &pipeline->orientedHeight,
         &minimumConfidence,
+        &maximumDetectionOverlap,
         &regionScale,
         &poseWidth,
         &poseHeight,
