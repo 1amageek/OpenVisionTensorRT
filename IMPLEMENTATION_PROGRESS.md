@@ -121,9 +121,10 @@ automatic or silent fallback.
 | Compact readback | No image or tensor is copied back to the host. At the four-person bound, only one 4-byte count, 80 bytes of regions, and 6,384 bytes of joint tuples cross D2H |
 | Rough overhead screening | 48 WEPDTOF frames from 16 scenes ran through one provider session. Thirteen frames produced poses; capacity-adjusted count recall proxy was 15.6%, with no false positive in the single negative frame. The 1–4-person subset produced a pose in only 1 of 10 frames, showing a ceiling/fisheye domain gap beyond the four-person cap. Warm execution averaged 7.53 ms, with p50 5.24 ms and maximum 14.58 ms |
 | Current complete GPU slice | `VisionImageInput` borrow -> one RG10 H2D -> fused CUDA detector preprocessing -> RTMDet -> GPU ROI affine -> DWPose -> GPU SimCC decode -> compact D2H -> OpenVision observations |
-| M4 temporal integration | Passed on Jetson with 62 contiguous IPN frames: 62/62 frames had pose, one actor remained on one track, and one rightward horizontal swipe completed `began -> changed -> ended`; annotations were evaluation-only metadata |
-| M4 temporal latency | Pose p50/p95 8.240512/8.884928 ms; ActionRecognition p50/p95 0.015776/0.017216 ms; complete path p50/p95 8.256064/8.901664 ms |
+| M4 temporal integration | The current evaluator completed four contiguous IPN slices totaling 236 frames. Pose was present in 236/236 frames and every slice retained one actor on one track. `D0X` produced no recognition, but `G05` was misclassified as rotary, `G06` ended a swipe in the preparatory direction, and `B0B` ended two swipes without a pointing observation. This proves execution, not semantic accuracy |
+| M4 temporal latency | Across the four slices, end-to-end p95 ranged from 8.548128 to 9.371936 ms and ActionRecognition p95 ranged from 0.035296 to 0.036672 ms |
 | M4 bounded history | Maximum 61 compact samples and 4,392 retained feature bytes; no full frame was retained by ActionRecognition |
+| Temporal evaluator acceptance | The current top-level `passed` status checks only whether any gesture reached `ended`. It does not score identifier, direction, label mapping, or temporal overlap and therefore is not an accuracy verdict |
 | Expanded ActionRecognition contract | Dataset evaluator builds against ActionRecognition `49e0e2f` and serializes non-gesture observations and ambiguous candidates without coercing them into gesture or no-match results |
 | Remaining integration path | Actual camera lease and storage negotiation, then sustained 30 FPS capture. DMA-BUF direct import is a separate capability and is not advertised |
 
@@ -138,14 +139,17 @@ automatic or silent fallback.
 
 ## M4 execution boundary
 
-M4 proves one complete offline temporal execution on the Jetson GPU:
+M4 proves complete offline temporal execution on the Jetson GPU, while the
+expanded dataset screening exposes unresolved semantic failures:
 
 ```text
-62 contiguous RG10 frames
+236 contiguous RG10 frames across four IPN slices
     -> production TensorRT pose provider
     -> OpenVision stateful body tracking
-    -> ActionRecognition horizontal swipe lifecycle
-    -> typed JSON result and latency/memory report
+    -> ActionRecognition semantic observations
+    -> typed JSON latency/memory and decision evidence
+         execution path: passed
+         dataset semantic match: not passed
 ```
 
 Wendy CLI `2026.07.17-173113` lost the OCI entrypoint and image environment
