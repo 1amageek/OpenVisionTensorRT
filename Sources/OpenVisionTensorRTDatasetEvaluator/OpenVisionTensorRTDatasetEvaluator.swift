@@ -33,7 +33,66 @@ enum OpenVisionTensorRTDatasetEvaluator {
     }
 }
 
+func jsonArray(_ values: [String]) -> String {
+    "[" + values.joined(separator: ",") + "]"
+}
+
+func jsonString(_ value: String) -> String {
+    var result = "\""
+    for scalar in value.unicodeScalars {
+        switch scalar.value {
+        case 0x22:
+            result += "\\\""
+        case 0x5C:
+            result += "\\\\"
+        case 0x08:
+            result += "\\b"
+        case 0x0C:
+            result += "\\f"
+        case 0x0A:
+            result += "\\n"
+        case 0x0D:
+            result += "\\r"
+        case 0x09:
+            result += "\\t"
+        case 0x00...0x1F:
+            let digits = Array("0123456789abcdef".utf8)
+            let high = Int((scalar.value >> 4) & 0xF)
+            let low = Int(scalar.value & 0xF)
+            result += "\\u00"
+            result.append(Character(UnicodeScalar(digits[high])))
+            result.append(Character(UnicodeScalar(digits[low])))
+        default:
+            result.unicodeScalars.append(scalar)
+        }
+    }
+    result += "\""
+    return result
+}
+
+
 #if os(Linux)
+private enum DatasetEvaluationError: Error {
+    case invalidArguments
+    case emptyManifest
+    case missingDetectorStage
+    case manifestRead(String)
+    case invalidManifestLine(Int)
+    case invalidGroundTruth(Int, String)
+    case invalidExpectation(Int, String)
+    case unresolvableExpectation(String)
+    case fixtureRead(String)
+    case fixtureSize(String)
+    case allocation
+    case storageReleased
+    case inputNotReleased(String)
+    case clock
+    case shutdown(String)
+    case operationAndShutdown(operation: String, shutdown: String)
+    case visionContext(String)
+    case temporalEvaluation(String)
+}
+
 private struct DatasetEvaluationRunner {
     private enum Mode: Sendable {
         case independentFrames
@@ -173,7 +232,7 @@ private struct DatasetEvaluationRunner {
                     provider,
                     configuration: sessionConfiguration
                 ) {
-                    await evaluateTemporal(records: records)
+                    await evaluateTemporal(manifest: evaluationManifest)
                 }
             } catch {
                 throw DatasetEvaluationError.visionContext(
@@ -352,10 +411,17 @@ private struct DatasetEvaluationRunner {
     }
 
     private func evaluateTemporal(
-        records: [EvaluationManifestRecord]
+        manifest: EvaluationManifestData
     ) async -> TemporalEvaluationOutcome {
+        let records = manifest.records
         let trackingRequest: TrackHumanBodyPoseRequest
         let recognitionSession: RecognitionSession
+        let expectations: [GestureExpectation.Resolved]
+        do {
+            expectations = try manifest.resolvedExpectations()
+        } catch {
+            return .failure(String(describing: error))
+        }
         do {
             trackingRequest = try TrackHumanBodyPoseRequest(
                 trackingSessionID: VisionTrackingSessionID(
@@ -383,6 +449,7 @@ private struct DatasetEvaluationRunner {
         frames.reserveCapacity(records.count)
         var maximumRetainedSamples = 0
         var maximumRetainedFeatureBytes = 0
+        var collector = GestureCommitment.Collector()
         var operationFailure: String?
 
         do {
@@ -460,6 +527,10 @@ private struct DatasetEvaluationRunner {
                     maximumRetainedFeatureBytes,
                     diagnostics.estimatedRetainedFeatureBytes
                 )
+                collector.consume(
+                    decisions: recognitionUpdate.decisions,
+                    frameIndex: index
+                )
                 frames.append(
                     TemporalFrameEvaluation(
                         id: record.id,
@@ -468,6 +539,9 @@ private struct DatasetEvaluationRunner {
                         wasAnalyzed: trackingUpdate.wasAnalyzed,
                         wrists: trackingUpdate.observations.flatMap(
                             TemporalWristEvaluation.values
+                        ),
+                        shoulderSpans: trackingUpdate.observations.compactMap(
+                            TemporalShoulderSpan.value
                         ),
                         associations: recognitionUpdate.associations.map(
                             TemporalActorAssociation.init
@@ -513,14 +587,24 @@ private struct DatasetEvaluationRunner {
                 maximumRetainedSamples: maximumRetainedSamples,
                 maximumRetainedFeatureBytes: maximumRetainedFeatureBytes
             )
+            let collected = collector.result
+            let score = ExpectationScore(
+                expectations: expectations,
+                commitments: collected.commitments,
+                ambiguousCommitmentCount: collected.ambiguousCommitmentCount,
+                minimumIntersectionOverUnion: manifest
+                    .minimumIntersectionOverUnion
+            )
+            // The status is the score's, not the pipeline's. A run that reaches
+            // this point has executed; whether it was right is a separate
+            // question, and only the score answers it.
             return .success(
                 TemporalEvaluationOutput(
-                    status: summary.completedGestureCount > 0
-                        ? "passed"
-                        : "completedNoGesture",
+                    status: score.status,
                     source: "IPN Hand contiguous temporal evaluation",
                     annotationWasRecognitionInput: false,
                     summary: summary,
+                    score: score,
                     frames: frames
                 )
             )
@@ -599,6 +683,36 @@ private struct EvaluationManifestData: Sendable {
     let source: String?
     let limitations: [String]
     let records: [EvaluationManifestRecord]
+    /// What the dataset says the actor did, in the order the lines declare it.
+    /// Empty means the run cannot be scored, which is reported as its own
+    /// status rather than folded into a pass.
+    let expectations: [GestureExpectation]
+    /// Overlap floor, applied only when the manifest states one. There is no
+    /// default: a threshold nobody chose would silently decide which correct
+    /// detections count.
+    let minimumIntersectionOverUnion: Double?
+
+    /// Binds each expectation's record identifiers to positions in the
+    /// evaluated sequence.
+    func resolvedExpectations() throws -> [GestureExpectation.Resolved] {
+        var frameIndexByRecordID: [String: Int] = [:]
+        frameIndexByRecordID.reserveCapacity(records.count)
+        for (index, record) in records.enumerated()
+        where frameIndexByRecordID[record.id] == nil {
+            frameIndexByRecordID[record.id] = index
+        }
+        return try expectations.map { expectation in
+            do {
+                return try expectation.resolved(
+                    frameIndexByRecordID: frameIndexByRecordID
+                )
+            } catch {
+                throw DatasetEvaluationError.unresolvableExpectation(
+                    String(describing: error)
+                )
+            }
+        }
+    }
 }
 
 private enum EvaluationManifest {
@@ -607,6 +721,8 @@ private enum EvaluationManifest {
         var source: String?
         var limitations: [String] = []
         var records: [EvaluationManifestRecord] = []
+        var expectations: [GestureExpectation] = []
+        var minimumIntersectionOverUnion: Double?
         for (lineIndex, line) in contents.split(separator: "\n").enumerated() {
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
             if fields.first == "#source" {
@@ -621,6 +737,31 @@ private enum EvaluationManifest {
                     throw DatasetEvaluationError.invalidManifestLine(lineIndex + 1)
                 }
                 limitations.append(String(fields[1]))
+                continue
+            }
+            if fields.first == "#expect" {
+                do {
+                    expectations.append(
+                        try GestureExpectation.parse(fields: Array(fields))
+                    )
+                } catch {
+                    throw DatasetEvaluationError.invalidExpectation(
+                        lineIndex + 1,
+                        String(describing: error)
+                    )
+                }
+                continue
+            }
+            if fields.first == "#expectMinimumIoU" {
+                guard fields.count == 2,
+                      let value = Double(fields[1]),
+                      value.isFinite,
+                      value > 0,
+                      value <= 1,
+                      minimumIntersectionOverUnion == nil else {
+                    throw DatasetEvaluationError.invalidManifestLine(lineIndex + 1)
+                }
+                minimumIntersectionOverUnion = value
                 continue
             }
             guard (fields.count == 4 || fields.count == 5),
@@ -657,7 +798,9 @@ private enum EvaluationManifest {
         return EvaluationManifestData(
             source: source,
             limitations: limitations,
-            records: records
+            records: records,
+            expectations: expectations,
+            minimumIntersectionOverUnion: minimumIntersectionOverUnion
         )
     }
 
@@ -1095,7 +1238,10 @@ private struct TemporalGestureEvaluation: Sendable {
     let identifier: String
     let phase: String
     let parameterKind: String
-    let direction: String
+    /// `nil` on every phase but `.ended`. Naming a direction the recognizer has
+    /// not committed to would put a value in the report that no consumer was
+    /// ever allowed to act on.
+    let direction: String?
     let displacement: Float
     let velocity: Float
     let cancellationReason: String?
@@ -1116,23 +1262,25 @@ private struct TemporalGestureEvaluation: Sendable {
             phase = "cancelled"
         }
         switch observation.parameters {
-        case .horizontalSwipe(let horizontalDirection, let magnitude, let speed):
+        case .horizontalSwipe(let parameters):
             parameterKind = "horizontalSwipe"
-            direction = horizontalDirection == .left ? "left" : "right"
-            displacement = magnitude
-            velocity = speed
+            direction = parameters.direction.map {
+                $0 == .left ? "left" : "right"
+            }
+            displacement = parameters.displacement
+            velocity = parameters.velocity
             cancellationReason = nil
-        case .rotaryManipulation(let rotationDirection, let angle, let speed):
+        case .rotaryManipulation(let parameters):
             parameterKind = "rotaryManipulation"
-            direction = rotationDirection == .clockwise
-                ? "clockwise"
-                : "counterclockwise"
-            displacement = angle
-            velocity = speed
+            direction = parameters.direction.map {
+                $0 == .clockwise ? "clockwise" : "counterclockwise"
+            }
+            displacement = parameters.angularDeltaRadians
+            velocity = parameters.angularVelocityRadiansPerSecond
             cancellationReason = nil
         case .cancel(let reason):
             parameterKind = "cancel"
-            direction = ""
+            direction = nil
             displacement = 0
             velocity = 0
             switch reason {
@@ -1153,7 +1301,7 @@ private struct TemporalGestureEvaluation: Sendable {
             + ",\"identifier\":" + jsonString(identifier)
             + ",\"phase\":" + jsonString(phase)
             + ",\"parameterKind\":" + jsonString(parameterKind)
-            + ",\"direction\":" + jsonString(direction)
+            + ",\"direction\":" + (direction.map(jsonString) ?? "null")
             + ",\"displacement\":" + String(displacement)
             + ",\"velocity\":" + String(velocity)
             + ",\"cancellationReason\":"
@@ -1341,12 +1489,51 @@ private struct TemporalWristEvaluation: Sendable {
     }
 }
 
+/// Distance between the shoulders, which is what the recognizer's
+/// `.bodyRelative` displacement metric divides by.
+///
+/// Recorded per frame because that metric cannot be evaluated on a recording
+/// that does not carry shoulders: absent this, a run says nothing about whether
+/// the body-relative path works, and silence would read as agreement.
+private struct TemporalShoulderSpan: Sendable {
+    let trackEpoch: UInt64
+    let trackSequence: UInt64
+    let span: Float
+    let minimumJointConfidence: Float
+
+    static func value(
+        for observation: TrackedHumanBodyPoseObservation
+    ) -> Self? {
+        guard let left = observation.pose.joint(for: .leftShoulder),
+              let right = observation.pose.joint(for: .rightShoulder) else {
+            return nil
+        }
+        let dx = left.location.x - right.location.x
+        let dy = left.location.y - right.location.y
+        return Self(
+            trackEpoch: observation.track.id.epoch,
+            trackSequence: observation.track.id.sequence,
+            span: (dx * dx + dy * dy).squareRoot(),
+            minimumJointConfidence: min(left.confidence, right.confidence)
+        )
+    }
+
+    var json: String {
+        "{\"trackEpoch\":" + String(trackEpoch)
+            + ",\"trackSequence\":" + String(trackSequence)
+            + ",\"span\":" + String(span)
+            + ",\"minimumJointConfidence\":"
+            + String(minimumJointConfidence) + "}"
+    }
+}
+
 private struct TemporalFrameEvaluation: Sendable {
     let id: String
     let groundTruthLabel: String
     let predictedPersonCount: Int
     let wasAnalyzed: Bool
     let wrists: [TemporalWristEvaluation]
+    let shoulderSpans: [TemporalShoulderSpan]
     let associations: [TemporalActorAssociation]
     let decisions: [TemporalDecisionEvaluation]
     let poseMilliseconds: Double
@@ -1359,6 +1546,7 @@ private struct TemporalFrameEvaluation: Sendable {
             + ",\"predictedPersonCount\":" + String(predictedPersonCount)
             + ",\"wasAnalyzed\":" + String(wasAnalyzed)
             + ",\"wrists\":" + jsonArray(wrists.map(\.json))
+            + ",\"shoulderSpans\":" + jsonArray(shoulderSpans.map(\.json))
             + ",\"associations\":"
             + jsonArray(associations.map(\.json))
             + ",\"decisions\":" + jsonArray(decisions.map(\.json))
@@ -1481,6 +1669,7 @@ private struct TemporalEvaluationOutput: Sendable {
     let source: String
     let annotationWasRecognitionInput: Bool
     let summary: TemporalEvaluationSummary
+    let score: ExpectationScore
     let frames: [TemporalFrameEvaluation]
 
     var json: String {
@@ -1489,6 +1678,7 @@ private struct TemporalEvaluationOutput: Sendable {
             + ",\"annotationWasRecognitionInput\":"
             + String(annotationWasRecognitionInput)
             + ",\"summary\":" + summary.json
+            + ",\"score\":" + score.json
             + ",\"frames\":" + jsonArray(frames.map(\.json)) + "}"
     }
 }
@@ -1503,59 +1693,5 @@ private struct DatasetEvaluationFailure: Sendable {
     }
 }
 
-private func jsonArray(_ values: [String]) -> String {
-    "[" + values.joined(separator: ",") + "]"
-}
-
-private func jsonString(_ value: String) -> String {
-    var result = "\""
-    for scalar in value.unicodeScalars {
-        switch scalar.value {
-        case 0x22:
-            result += "\\\""
-        case 0x5C:
-            result += "\\\\"
-        case 0x08:
-            result += "\\b"
-        case 0x0C:
-            result += "\\f"
-        case 0x0A:
-            result += "\\n"
-        case 0x0D:
-            result += "\\r"
-        case 0x09:
-            result += "\\t"
-        case 0x00...0x1F:
-            let digits = Array("0123456789abcdef".utf8)
-            let high = Int((scalar.value >> 4) & 0xF)
-            let low = Int(scalar.value & 0xF)
-            result += "\\u00"
-            result.append(Character(UnicodeScalar(digits[high])))
-            result.append(Character(UnicodeScalar(digits[low])))
-        default:
-            result.unicodeScalars.append(scalar)
-        }
-    }
-    result += "\""
-    return result
-}
-
-private enum DatasetEvaluationError: Error {
-    case invalidArguments
-    case emptyManifest
-    case missingDetectorStage
-    case manifestRead(String)
-    case invalidManifestLine(Int)
-    case invalidGroundTruth(Int, String)
-    case fixtureRead(String)
-    case fixtureSize(String)
-    case allocation
-    case storageReleased
-    case inputNotReleased(String)
-    case clock
-    case shutdown(String)
-    case operationAndShutdown(operation: String, shutdown: String)
-    case visionContext(String)
-    case temporalEvaluation(String)
-}
 #endif
+

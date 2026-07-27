@@ -91,6 +91,13 @@ let package = Package(
             dependencies: ["OpenVisionTensorRTEvaluation"]
         ),
         .testTarget(
+            name: "OpenVisionTensorRTDatasetEvaluatorTests",
+            dependencies: [
+                "OpenVisionTensorRTDatasetEvaluator",
+                "ActionRecognition"
+            ]
+        ),
+        .testTarget(
             name: "OpenVisionTensorRTTests",
             dependencies: ["OpenVisionTensorRT"]
         )
