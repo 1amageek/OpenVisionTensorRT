@@ -67,6 +67,9 @@
       path with per-frame observation and latency reports
 - [x] ActionRecognition integration target with stateful OpenVision tracking,
       bounded compact history, and typed horizontal-swipe lifecycle output
+- [x] Dataset evaluator preserves generic pose, action, pointing, gesture,
+      cancellation, and ambiguity decisions from the portable
+      `RecognitionObservation` contract
 
 ## Incomplete production work
 
@@ -121,6 +124,7 @@ automatic or silent fallback.
 | M4 temporal integration | Passed on Jetson with 62 contiguous IPN frames: 62/62 frames had pose, one actor remained on one track, and one rightward horizontal swipe completed `began -> changed -> ended`; annotations were evaluation-only metadata |
 | M4 temporal latency | Pose p50/p95 8.240512/8.884928 ms; ActionRecognition p50/p95 0.015776/0.017216 ms; complete path p50/p95 8.256064/8.901664 ms |
 | M4 bounded history | Maximum 61 compact samples and 4,392 retained feature bytes; no full frame was retained by ActionRecognition |
+| Expanded ActionRecognition contract | Dataset evaluator builds against ActionRecognition `49e0e2f` and serializes non-gesture observations and ambiguous candidates without coercing them into gesture or no-match results |
 | Remaining integration path | Actual camera lease and storage negotiation, then sustained 30 FPS capture. DMA-BUF direct import is a separate capability and is not advertised |
 
 ## Release gates beyond implementation

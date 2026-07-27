@@ -1094,9 +1094,11 @@ private struct TemporalGestureEvaluation: Sendable {
     let correlationSequence: UInt64
     let identifier: String
     let phase: String
+    let parameterKind: String
     let direction: String
     let displacement: Float
     let velocity: Float
+    let cancellationReason: String?
     let confidence: Float
 
     init(_ observation: GestureObservation) {
@@ -1115,9 +1117,32 @@ private struct TemporalGestureEvaluation: Sendable {
         }
         switch observation.parameters {
         case .horizontalSwipe(let horizontalDirection, let magnitude, let speed):
+            parameterKind = "horizontalSwipe"
             direction = horizontalDirection == .left ? "left" : "right"
             displacement = magnitude
             velocity = speed
+            cancellationReason = nil
+        case .rotaryManipulation(let rotationDirection, let angle, let speed):
+            parameterKind = "rotaryManipulation"
+            direction = rotationDirection == .clockwise
+                ? "clockwise"
+                : "counterclockwise"
+            displacement = angle
+            velocity = speed
+            cancellationReason = nil
+        case .cancel(let reason):
+            parameterKind = "cancel"
+            direction = ""
+            displacement = 0
+            velocity = 0
+            switch reason {
+            case .explicitPose:
+                cancellationReason = "explicitPose"
+            case .trackingLost:
+                cancellationReason = "trackingLost"
+            case .evidenceInvalidated:
+                cancellationReason = "evidenceInvalidated"
+            }
         }
         confidence = observation.confidence
     }
@@ -1127,35 +1152,119 @@ private struct TemporalGestureEvaluation: Sendable {
             + ",\"correlationSequence\":" + String(correlationSequence)
             + ",\"identifier\":" + jsonString(identifier)
             + ",\"phase\":" + jsonString(phase)
+            + ",\"parameterKind\":" + jsonString(parameterKind)
             + ",\"direction\":" + jsonString(direction)
             + ",\"displacement\":" + String(displacement)
             + ",\"velocity\":" + String(velocity)
+            + ",\"cancellationReason\":"
+            + (cancellationReason.map(jsonString) ?? "null")
             + ",\"confidence\":" + String(confidence) + "}"
+    }
+}
+
+private enum TemporalRecognizedEvaluation: Sendable {
+    case gesture(TemporalGestureEvaluation)
+    case semantic(
+        actorSequence: UInt64,
+        kind: String,
+        identifier: String,
+        phase: String?,
+        confidence: Float
+    )
+
+    init(_ observation: RecognitionObservation) {
+        switch observation {
+        case .gesture(let gesture):
+            self = .gesture(TemporalGestureEvaluation(gesture))
+        case .pose(let pose):
+            self = .semantic(
+                actorSequence: pose.actorID.sequence,
+                kind: "pose",
+                identifier: pose.identifier.rawValue,
+                phase: nil,
+                confidence: pose.confidence
+            )
+        case .action(let action):
+            self = .semantic(
+                actorSequence: action.actorID.sequence,
+                kind: "action",
+                identifier: action.identifier.rawValue,
+                phase: Self.phase(action.phase),
+                confidence: action.confidence
+            )
+        case .pointing(let pointing):
+            self = .semantic(
+                actorSequence: pointing.actorID.sequence,
+                kind: "pointing",
+                identifier: pointing.evidenceKind == .arm
+                    ? "arm"
+                    : "indexFinger",
+                phase: nil,
+                confidence: pointing.confidence
+            )
+        }
+    }
+
+    var gesture: TemporalGestureEvaluation? {
+        guard case .gesture(let gesture) = self else { return nil }
+        return gesture
+    }
+
+    var json: String {
+        switch self {
+        case .gesture(let gesture):
+            return "{\"kind\":\"gesture\",\"gesture\":"
+                + gesture.json + "}"
+        case .semantic(
+            let actorSequence,
+            let kind,
+            let identifier,
+            let phase,
+            let confidence
+        ):
+            return "{\"kind\":" + jsonString(kind)
+                + ",\"actorSequence\":" + String(actorSequence)
+                + ",\"identifier\":" + jsonString(identifier)
+                + ",\"phase\":" + (phase.map(jsonString) ?? "null")
+                + ",\"confidence\":" + String(confidence) + "}"
+        }
+    }
+
+    private static func phase(_ phase: GesturePhase) -> String {
+        switch phase {
+        case .began: "began"
+        case .changed: "changed"
+        case .ended: "ended"
+        case .cancelled: "cancelled"
+        }
     }
 }
 
 private enum TemporalDecisionEvaluation: Sendable {
     case noMatch(actorSequence: UInt64)
-    case recognized(TemporalGestureEvaluation)
-    case ambiguous(actorSequence: UInt64, candidateCount: Int)
+    case recognized(TemporalRecognizedEvaluation)
+    case ambiguous(
+        actorSequence: UInt64,
+        candidates: [TemporalRecognizedEvaluation]
+    )
 
     init(_ decision: RecognitionDecision) {
         switch decision {
         case .noMatch(let actorID):
             self = .noMatch(actorSequence: actorID.sequence)
         case .recognized(let observation):
-            self = .recognized(TemporalGestureEvaluation(observation))
+            self = .recognized(TemporalRecognizedEvaluation(observation))
         case .ambiguous(let actorID, let candidates):
             self = .ambiguous(
                 actorSequence: actorID.sequence,
-                candidateCount: candidates.count
+                candidates: candidates.map(TemporalRecognizedEvaluation.init)
             )
         }
     }
 
     var gesture: TemporalGestureEvaluation? {
-        guard case .recognized(let gesture) = self else { return nil }
-        return gesture
+        guard case .recognized(let observation) = self else { return nil }
+        return observation.gesture
     }
 
     var isNoMatch: Bool {
@@ -1168,13 +1277,15 @@ private enum TemporalDecisionEvaluation: Sendable {
         case .noMatch(let actorSequence):
             return "{\"kind\":\"noMatch\",\"actorSequence\":"
                 + String(actorSequence) + "}"
-        case .recognized(let gesture):
-            return "{\"kind\":\"recognized\",\"gesture\":"
-                + gesture.json + "}"
-        case .ambiguous(let actorSequence, let candidateCount):
+        case .recognized(let observation):
+            return "{\"kind\":\"recognized\",\"observation\":"
+                + observation.json + "}"
+        case .ambiguous(let actorSequence, let candidates):
             return "{\"kind\":\"ambiguous\",\"actorSequence\":"
                 + String(actorSequence)
-                + ",\"candidateCount\":" + String(candidateCount) + "}"
+                + ",\"candidateCount\":" + String(candidates.count)
+                + ",\"candidates\":"
+                + jsonArray(candidates.map(\.json)) + "}"
         }
     }
 }
