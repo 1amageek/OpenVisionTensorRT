@@ -15,10 +15,13 @@ enum OpenVisionTensorRTDatasetEvaluator {
     static func main() async {
         #if os(Linux)
         do {
-            let output = try await DatasetEvaluationRunner(
+            let result = try await DatasetEvaluationRunner(
                 arguments: Array(CommandLine.arguments.dropFirst())
             ).run()
-            print(output)
+            print(result.json)
+            if case .expectationsNotSatisfied = result.disposition {
+                exit(2)
+            }
         } catch {
             let failure = DatasetEvaluationFailure(
                 status: "failed",
@@ -93,6 +96,16 @@ private enum DatasetEvaluationError: Error {
     case temporalEvaluation(String)
 }
 
+private enum DatasetEvaluationDisposition: Sendable {
+    case passed
+    case expectationsNotSatisfied
+}
+
+private struct DatasetEvaluationCommandResult: Sendable {
+    let json: String
+    let disposition: DatasetEvaluationDisposition
+}
+
 private struct DatasetEvaluationRunner {
     private enum Mode: Sendable {
         case independentFrames
@@ -125,7 +138,7 @@ private struct DatasetEvaluationRunner {
         manifestPath = arguments[5]
     }
 
-    func run() async throws -> String {
+    func run() async throws -> DatasetEvaluationCommandResult {
         let evaluationManifest = try EvaluationManifest.load(at: manifestPath)
         let records = evaluationManifest.records
         guard !records.isEmpty else {
@@ -241,7 +254,12 @@ private struct DatasetEvaluationRunner {
             }
             switch outcome {
             case .success(let output):
-                return output.json
+                return DatasetEvaluationCommandResult(
+                    json: output.json,
+                    disposition: output.status == "passed"
+                        ? .passed
+                        : .expectationsNotSatisfied
+                )
             case .failure(let reason):
                 throw DatasetEvaluationError.temporalEvaluation(reason)
             }
@@ -273,7 +291,7 @@ private struct DatasetEvaluationRunner {
             let hasGroundTruthJoints = records.contains {
                 !$0.groundTruthJoints.isEmpty
             }
-            return DatasetEvaluationOutput(
+            let output = DatasetEvaluationOutput(
                 status: "passed",
                 source: evaluationManifest.source
                     ?? (hasGroundTruthJoints
@@ -292,7 +310,11 @@ private struct DatasetEvaluationRunner {
                     : evaluationManifest.limitations,
                 summary: DatasetEvaluationSummary(frames: frames),
                 frames: frames
-            ).json
+            )
+            return DatasetEvaluationCommandResult(
+                json: output.json,
+                disposition: .passed
+            )
         case (.failure(let error), nil):
             throw error
         case (.success, .some(let error)):
@@ -417,8 +439,10 @@ private struct DatasetEvaluationRunner {
         let trackingRequest: TrackHumanBodyPoseRequest
         let recognitionSession: RecognitionSession
         let expectations: [GestureExpectation.Resolved]
+        let negativeExpectations: [NoGestureExpectation.Resolved]
         do {
             expectations = try manifest.resolvedExpectations()
+            negativeExpectations = try manifest.resolvedNegativeExpectations()
         } catch {
             return .failure(String(describing: error))
         }
@@ -590,6 +614,7 @@ private struct DatasetEvaluationRunner {
             let collected = collector.result
             let score = ExpectationScore(
                 expectations: expectations,
+                negativeExpectations: negativeExpectations,
                 commitments: collected.commitments,
                 ambiguousCommitmentCount: collected.ambiguousCommitmentCount,
                 minimumIntersectionOverUnion: manifest
@@ -687,6 +712,9 @@ private struct EvaluationManifestData: Sendable {
     /// Empty means the run cannot be scored, which is reported as its own
     /// status rather than folded into a pass.
     let expectations: [GestureExpectation]
+    /// Explicit no-gesture intervals. Unlike an absent annotation, these make
+    /// a silent run scoreable and reject every commitment in the interval.
+    let negativeExpectations: [NoGestureExpectation]
     /// Overlap floor, applied only when the manifest states one. There is no
     /// default: a threshold nobody chose would silently decide which correct
     /// detections count.
@@ -695,12 +723,7 @@ private struct EvaluationManifestData: Sendable {
     /// Binds each expectation's record identifiers to positions in the
     /// evaluated sequence.
     func resolvedExpectations() throws -> [GestureExpectation.Resolved] {
-        var frameIndexByRecordID: [String: Int] = [:]
-        frameIndexByRecordID.reserveCapacity(records.count)
-        for (index, record) in records.enumerated()
-        where frameIndexByRecordID[record.id] == nil {
-            frameIndexByRecordID[record.id] = index
-        }
+        let frameIndexByRecordID = frameIndexByRecordID()
         return try expectations.map { expectation in
             do {
                 return try expectation.resolved(
@@ -713,6 +736,31 @@ private struct EvaluationManifestData: Sendable {
             }
         }
     }
+
+    func resolvedNegativeExpectations() throws -> [NoGestureExpectation.Resolved] {
+        let frameIndexByRecordID = frameIndexByRecordID()
+        return try negativeExpectations.map { expectation in
+            do {
+                return try expectation.resolved(
+                    frameIndexByRecordID: frameIndexByRecordID
+                )
+            } catch {
+                throw DatasetEvaluationError.unresolvableExpectation(
+                    String(describing: error)
+                )
+            }
+        }
+    }
+
+    private func frameIndexByRecordID() -> [String: Int] {
+        var result: [String: Int] = [:]
+        result.reserveCapacity(records.count)
+        for (index, record) in records.enumerated()
+        where result[record.id] == nil {
+            result[record.id] = index
+        }
+        return result
+    }
 }
 
 private enum EvaluationManifest {
@@ -722,6 +770,7 @@ private enum EvaluationManifest {
         var limitations: [String] = []
         var records: [EvaluationManifestRecord] = []
         var expectations: [GestureExpectation] = []
+        var negativeExpectations: [NoGestureExpectation] = []
         var minimumIntersectionOverUnion: Double?
         for (lineIndex, line) in contents.split(separator: "\n").enumerated() {
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
@@ -743,6 +792,19 @@ private enum EvaluationManifest {
                 do {
                     expectations.append(
                         try GestureExpectation.parse(fields: Array(fields))
+                    )
+                } catch {
+                    throw DatasetEvaluationError.invalidExpectation(
+                        lineIndex + 1,
+                        String(describing: error)
+                    )
+                }
+                continue
+            }
+            if fields.first == "#expectNone" {
+                do {
+                    negativeExpectations.append(
+                        try NoGestureExpectation.parse(fields: Array(fields))
                     )
                 } catch {
                     throw DatasetEvaluationError.invalidExpectation(
@@ -800,6 +862,7 @@ private enum EvaluationManifest {
             limitations: limitations,
             records: records,
             expectations: expectations,
+            negativeExpectations: negativeExpectations,
             minimumIntersectionOverUnion: minimumIntersectionOverUnion
         )
     }
@@ -1694,4 +1757,3 @@ private struct DatasetEvaluationFailure: Sendable {
 }
 
 #endif
-

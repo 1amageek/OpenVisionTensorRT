@@ -47,6 +47,19 @@ struct ExpectationScoreTests {
         }
     }
 
+    @Test("An explicit no-gesture window is parsed and resolved")
+    func noGestureWindowIsExplicit() throws {
+        let parsed = try NoGestureExpectation.parse(
+            fields: fields("#expectNone", "a", "b")
+        )
+        let resolved = try parsed.resolved(
+            frameIndexByRecordID: ["a": 4, "b": 9]
+        )
+        #expect(resolved.firstFrameIndex == 4)
+        #expect(resolved.lastFrameIndex == 9)
+        #expect(resolved.contains(frameIndex: 6))
+    }
+
     /// Resolving against a record the manifest does not contain fails loudly.
     /// Dropping the expectation instead would shrink what the run is scored
     /// against while still reporting a pass.
@@ -172,6 +185,41 @@ struct ExpectationScoreTests {
         #expect(score.falsePositives.count == 1)
     }
 
+    @Test("An explicit no-gesture run passes when nothing commits")
+    func silentNegativeRunPasses() throws {
+        let score = ExpectationScore(
+            expectations: [],
+            negativeExpectations: [try noGestureWindow(0, 20)],
+            commitments: [],
+            ambiguousCommitmentCount: 0,
+            minimumIntersectionOverUnion: nil
+        )
+        #expect(score.isPassing)
+        #expect(score.status == "passed")
+        #expect(score.negativeExpectationViolations.isEmpty)
+        #expect(score.json.contains("\"negativeExpectationCount\":1"))
+    }
+
+    @Test("A commitment in a no-gesture window fails")
+    func commitmentInNegativeWindowFails() throws {
+        let score = ExpectationScore(
+            expectations: [],
+            negativeExpectations: [try noGestureWindow(0, 20)],
+            commitments: [
+                commitment(.horizontal(.right), first: 4, ended: 9)
+            ],
+            ambiguousCommitmentCount: 0,
+            minimumIntersectionOverUnion: nil
+        )
+        #expect(!score.isPassing)
+        #expect(score.status == "failedExpectations")
+        #expect(score.falsePositives.count == 1)
+        #expect(score.negativeExpectationViolations.count == 1)
+        #expect(
+            score.json.contains("\"negativeExpectationViolationCount\":1")
+        )
+    }
+
     /// One motion, one answer. A recognizer that fires twice inside a single
     /// annotated gesture is producing a spurious commitment, and counting the
     /// second one as another hit would reward the flicker.
@@ -290,6 +338,20 @@ struct ExpectationScoreTests {
         frameIndexByRecordID[firstID] = first
         frameIndexByRecordID[lastID] = last
         return try parsed.resolved(frameIndexByRecordID: frameIndexByRecordID)
+    }
+
+    private func noGestureWindow(
+        _ first: Int,
+        _ last: Int
+    ) throws -> NoGestureExpectation.Resolved {
+        let firstID = "record-\(first)"
+        let lastID = "record-\(last)"
+        let parsed = try NoGestureExpectation.parse(
+            fields: fields("#expectNone", firstID, lastID)
+        )
+        return try parsed.resolved(
+            frameIndexByRecordID: [firstID: first, lastID: last]
+        )
     }
 
     private func commitment(

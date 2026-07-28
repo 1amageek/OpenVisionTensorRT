@@ -50,8 +50,14 @@ struct ExpectationScore: Sendable {
     }
 
     let matches: [Match]
+    /// Explicit windows in which no gesture may be committed.
+    let negativeExpectations: [NoGestureExpectation.Resolved]
     /// Commitments that fell inside no annotated window.
     let falsePositives: [GestureCommitment]
+    /// Commitments whose final evidence fell inside an explicit no-gesture
+    /// window. These are reported separately from generic false positives so
+    /// product-safety regressions are directly visible.
+    let negativeExpectationViolations: [GestureCommitment]
     /// Commitments the session declined to decide between. Not scored either
     /// way, but reported so they cannot pass unnoticed.
     let ambiguousCommitmentCount: Int
@@ -61,6 +67,7 @@ struct ExpectationScore: Sendable {
 
     init(
         expectations: [GestureExpectation.Resolved],
+        negativeExpectations: [NoGestureExpectation.Resolved] = [],
         commitments: [GestureCommitment],
         ambiguousCommitmentCount: Int,
         minimumIntersectionOverUnion: Double?
@@ -109,7 +116,15 @@ struct ExpectationScore: Sendable {
             )
         }
         self.matches = expectations.indices.compactMap { matches[$0] }
+        self.negativeExpectations = negativeExpectations
         self.falsePositives = falsePositives
+        self.negativeExpectationViolations = commitments.filter { commitment in
+            negativeExpectations.contains { expectation in
+                expectation.contains(
+                    frameIndex: commitment.commitmentFrameIndex
+                )
+            }
+        }
         self.ambiguousCommitmentCount = ambiguousCommitmentCount
         self.minimumIntersectionOverUnion = minimumIntersectionOverUnion
     }
@@ -118,34 +133,51 @@ struct ExpectationScore: Sendable {
         matches.filter { $0.outcome == outcome }.count
     }
 
-    /// A pass requires every expectation to be met and nothing to be committed
-    /// outside one. A run that declares no expectations is not passing — it is
-    /// unscored, and reports itself as such.
+    /// A pass requires at least one explicit positive or negative expectation,
+    /// every positive expectation to be met, and no unclaimed or explicitly
+    /// forbidden commitment. A manifest with neither kind remains unscored.
     var isPassing: Bool {
-        !matches.isEmpty
+        (!matches.isEmpty || !negativeExpectations.isEmpty)
             && matches.allSatisfy { $0.outcome == .truePositive }
             && falsePositives.isEmpty
+            && negativeExpectationViolations.isEmpty
     }
 
     var status: String {
-        if matches.isEmpty { return "completedNoExpectation" }
+        if matches.isEmpty, negativeExpectations.isEmpty {
+            return "completedNoExpectation"
+        }
         return isPassing ? "passed" : "failedExpectations"
     }
 
     var json: String {
         "{\"status\":" + jsonString(status)
             + ",\"expectationCount\":" + String(matches.count)
+            + ",\"negativeExpectationCount\":"
+            + String(negativeExpectations.count)
             + ",\"truePositiveCount\":" + String(count(of: .truePositive))
             + ",\"labelErrorCount\":" + String(count(of: .labelError))
             + ",\"directionErrorCount\":" + String(count(of: .directionError))
             + ",\"temporalErrorCount\":" + String(count(of: .temporalError))
             + ",\"falseNegativeCount\":" + String(count(of: .falseNegative))
             + ",\"falsePositiveCount\":" + String(falsePositives.count)
+            + ",\"negativeExpectationViolationCount\":"
+            + String(negativeExpectationViolations.count)
             + ",\"ambiguousCommitmentCount\":"
             + String(ambiguousCommitmentCount)
             + ",\"minimumIntersectionOverUnion\":"
             + (minimumIntersectionOverUnion.map { String($0) } ?? "null")
             + ",\"matches\":" + jsonArray(matches.map(\.json))
+            + ",\"negativeExpectations\":"
+            + jsonArray(
+                negativeExpectations.map { expectation in
+                    "{\"expectation\":" + expectation.expectation.json
+                        + ",\"firstFrameIndex\":"
+                        + String(expectation.firstFrameIndex)
+                        + ",\"lastFrameIndex\":"
+                        + String(expectation.lastFrameIndex) + "}"
+                }
+            )
             + ",\"falsePositives\":"
             + jsonArray(falsePositives.map(\.json)) + "}"
     }

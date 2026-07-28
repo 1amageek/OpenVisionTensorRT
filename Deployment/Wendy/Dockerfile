@@ -72,8 +72,7 @@ COPY .build-context/Sources/OpenVisionTensorRTSwiftProbe ./swift-source/Sources/
 COPY .build-context/Sources/OpenVisionTensorRTEngineProbe ./swift-source/Sources/OpenVisionTensorRTEngineProbe
 COPY .build-context/Sources/OpenVisionTensorRTDatasetEvaluator ./swift-source/Sources/OpenVisionTensorRTDatasetEvaluator
 COPY .build-context/Sources/OpenVisionTensorRTEvaluation ./swift-source/Sources/OpenVisionTensorRTEvaluation
-COPY .build-context/Tests/OpenVisionTensorRTTests ./swift-source/Tests/OpenVisionTensorRTTests
-COPY .build-context/Tests/OpenVisionTensorRTEvaluationTests ./swift-source/Tests/OpenVisionTensorRTEvaluationTests
+COPY .build-context/Tests ./swift-source/Tests
 
 RUN find /build/swift-source \
         -maxdepth 4 \

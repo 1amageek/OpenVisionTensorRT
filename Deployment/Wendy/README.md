@@ -42,9 +42,21 @@ OPENVISION_TRT_TEMPORAL_EVALUATION_ROOT=/path/to/temporal-evaluation \
 
 The temporal root has the same `runtime-manifest.tsv` and `fixtures/*.rg10`
 layout. Frames must be ordered in the manifest. Annotation labels are reported
-only as evaluation metadata and are never passed to the recognizer. A
-`completedNoGesture` status means the entire execution path completed but no
-gesture reached the `ended` phase; it is not a successful recognition result.
+only as evaluation metadata and are never passed to the recognizer.
+
+Temporal manifests declare scoreable behavior with typed directives:
+
+```text
+#expect<TAB>right<TAB>first-record-id<TAB>last-record-id
+#expectNone<TAB>first-record-id<TAB>last-record-id
+```
+
+Directional values are `left`, `right`, `clockwise`, and `counterclockwise`;
+the direction implies the gesture vocabulary. `#expectNone` is an explicit
+negative interval and passes only when no gesture is committed. A manifest
+without either directive remains `completedNoExpectation` and is not a pass.
+The evaluator exits with status `2` for `failedExpectations` and
+`completedNoExpectation`, while still writing the complete JSON report.
 
 Then build and run the arm64 container:
 

@@ -70,6 +70,11 @@
 - [x] Dataset evaluator preserves generic pose, action, pointing, gesture,
       cancellation, and ambiguity decisions from the portable
       `RecognitionObservation` contract
+- [x] Typed positive gesture expectations score identifier, direction, and
+      temporal overlap without using annotations as recognition input
+- [x] Explicit no-gesture windows distinguish a qualified negative run from
+      an unannotated, unscored run
+- [x] Dataset expectation failures retain their JSON report and exit nonzero
 
 ## Incomplete production work
 
@@ -90,7 +95,8 @@ automatic or silent fallback.
 
 | Check | Current evidence |
 |---|---|
-| macOS unavailable, configuration, lifecycle, semantic manifest, engine-binding, output-capacity, provider, decoder, and lease behavior | 29 tests in three suites passed with `xcodebuild test` |
+| macOS unavailable, configuration, lifecycle, semantic manifest, engine-binding, output-capacity, provider, decoder, and lease behavior | 31 tests in three suites passed with `xcodebuild test` |
+| Temporal expectation parsing, commitment collection, positive scoring, and explicit negative scoring | 25 tests in two suites passed with `xcodebuild test` |
 | macOS sanitizer behavior | The same 29 tests passed independently with Address Sanitizer and Thread Sanitizer |
 | Regular WASM | Debug and release `OpenVisionTensorRT` target builds passed with `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a` toolchain and matching SDK |
 | Embedded WASM | Debug and release `OpenVisionTensorRT` target builds passed with the same 2026-07-17 toolchain and Embedded SDK |
@@ -121,11 +127,12 @@ automatic or silent fallback.
 | Compact readback | No image or tensor is copied back to the host. At the four-person bound, only one 4-byte count, 80 bytes of regions, and 6,384 bytes of joint tuples cross D2H |
 | Rough overhead screening | 48 WEPDTOF frames from 16 scenes ran through one provider session. Thirteen frames produced poses; capacity-adjusted count recall proxy was 15.6%, with no false positive in the single negative frame. The 1–4-person subset produced a pose in only 1 of 10 frames, showing a ceiling/fisheye domain gap beyond the four-person cap. Warm execution averaged 7.53 ms, with p50 5.24 ms and maximum 14.58 ms |
 | Current complete GPU slice | `VisionImageInput` borrow -> one RG10 H2D -> fused CUDA detector preprocessing -> RTMDet -> GPU ROI affine -> DWPose -> GPU SimCC decode -> compact D2H -> OpenVision observations |
-| M4 temporal integration | The current evaluator completed four contiguous IPN slices totaling 236 frames. Pose was present in 236/236 frames and every slice retained one actor on one track. `D0X` produced no recognition, but `G05` was misclassified as rotary, `G06` ended a swipe in the preparatory direction, and `B0B` ended two swipes without a pointing observation. This proves execution, not semantic accuracy |
-| M4 temporal latency | Across the four slices, end-to-end p95 ranged from 8.548128 to 9.371936 ms and ActionRecognition p95 ranged from 0.035296 to 0.036672 ms |
-| M4 bounded history | Maximum 61 compact samples and 4,392 retained feature bytes; no full frame was retained by ActionRecognition |
-| Temporal evaluator acceptance | The current top-level `passed` status checks only whether any gesture reached `ended`. It does not score identifier, direction, label mapping, or temporal overlap and therefore is not an accuracy verdict |
-| Expanded ActionRecognition contract | Dataset evaluator builds against ActionRecognition `49e0e2f` and serializes non-gesture observations and ambiguous candidates without coercing them into gesture or no-match results |
+| M4 temporal integration | The evaluator completed four contiguous IPN slices totaling 236 frames. Pose was present in 236/236 frames and every slice retained one actor on one track. `G05` committed one image-right swipe, `G06` committed one image-left swipe, and `D0X` plus `B0B` committed no gesture. All four passed their explicit typed expectations |
+| M4 temporal latency | Across the four slices, end-to-end p95 ranged from 8.435520 to 9.058240 ms and ActionRecognition p95 ranged from 0.050368 to 0.078880 ms |
+| M4 bounded history | Maximum 61 compact samples and 4,880 retained feature bytes; no full frame was retained by ActionRecognition |
+| Temporal evaluator acceptance | Positive expectations score identifier, direction, false positives, false negatives, and optional temporal IoU. `#expectNone` windows make a silent negative run scoreable, while a manifest without either expectation kind remains `completedNoExpectation` |
+| Temporal evaluator failure path | An intentionally false `#expectNone` annotation over G05 reported one false positive and one negative-window violation, retained the complete JSON report, and exited with status 2; the correctly silent D0X run exited with status 0 |
+| Expanded ActionRecognition contract | Dataset evaluator serializes non-gesture observations and ambiguous candidates without coercing them into gesture or no-match results. Built-in gesture identifiers reject a contradictory built-in parameter vocabulary at the portable typed boundary |
 | Remaining integration path | Actual camera lease and storage negotiation, then sustained 30 FPS capture. DMA-BUF direct import is a separate capability and is not advertised |
 
 ## Release gates beyond implementation
